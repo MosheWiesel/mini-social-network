@@ -94,7 +94,10 @@ def get_posts(user_id):
     friend_ids = [row["friendID"] for row in rows if row["status"] == 2]
     friend_ids.append(user_id)
 
-    mongo_posts = list(posts.find({"userID": {"$in": friend_ids},"type": "post"}))
+    mongo_posts = list(
+        posts.find({"userID": {"$in": friend_ids}, "type": "post"})
+        .sort("_id", -1)
+    )
     
     post_ids = [post["_id"] for post in mongo_posts]
     

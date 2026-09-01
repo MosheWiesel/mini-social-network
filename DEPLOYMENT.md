@@ -13,8 +13,19 @@ Railway — Flask + Gunicorn + הקבצים הסטטיים
 ## 1. העלאת הקוד ל־GitHub
 
 1. צרו repository חדש ב־GitHub.
-2. העלו אליו את כל קובצי הפרויקט מלבד קבצים שמופיעים ב־`.gitignore`.
-3. ודאו במיוחד ש־`.env`, הקובץ `app.db` ותיקיית `.venv` לא הועלו.
+2. פתחו Terminal בתיקיית הפרויקט והריצו (החליפו את כתובת ה־repository):
+
+   ```bash
+   git init
+   git add .
+   git commit -m "Prepare Flask app for Railway"
+   git branch -M main
+   git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git
+   git push -u origin main
+   ```
+
+   אם הפרויקט כבר מחובר ל־GitHub, מספיק בדרך כלל להריץ `git add .`, לבצע commit ואז `git push`.
+3. ודאו במיוחד ש־`.env`, הקובץ `app.db` ותיקיית `.venv` לא מופיעים ב־repository באתר GitHub.
 
 אין להכניס סיסמת Atlas או connection string אמיתי לקוד או ל־`.env.example`.
 
