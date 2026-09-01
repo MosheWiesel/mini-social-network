@@ -46,6 +46,9 @@ const translations = {
     logout: "יציאה", yourCircle: "המעגל שלך", createPost: "יצירת פוסט", composerPlaceholder: "מה עובר לך בראש?",
     publish: "פרסום", discover: "לגלות ולהתחבר", searchPeople: "חיפוש אנשים", connections: "חיבורים שמחכים לך",
     yourSpace: "המקום שלך", simpleProfile: "פשוט ואמיתי", profileLimit: "הפרופיל מציג רק מידע שקיים במערכת.",
+    personalDetails: "פרטים אישיים", changeUsername: "שינוי שם משתמש", newUsername: "שם משתמש חדש",
+    usernameHelp: "השם החדש יוצג בפוסטים, בתגובות וברשימת האנשים.", saveChanges: "שמירת שינויים",
+    usernameUpdated: "שם המשתמש עודכן בהצלחה.", profileUpdateError: "לא הצלחנו לעדכן את שם המשתמש.", usernameTooLong: "שם המשתמש יכול להכיל עד 80 תווים.",
     makeItYours: "להרגיש בבית", language: "שפה", languageDescription: "בחרו את שפת הממשק",
     appearance: "מראה", appearanceDescription: "מצב בהיר או כהה", logoutDescription: "ניתן להיכנס שוב בכל עת",
     lightMode: "מצב בהיר", darkMode: "מצב כהה", peopleWaiting: "אנשים שמחכים", viewAll: "הכול",
@@ -88,6 +91,9 @@ const translations = {
     logout: "Log out", yourCircle: "Your circle", createPost: "Create post", composerPlaceholder: "What’s on your mind?",
     publish: "Publish", discover: "Discover and connect", searchPeople: "Search people", connections: "Connections waiting for you",
     yourSpace: "Your space", simpleProfile: "Simple and genuine", profileLimit: "This profile only shows information available in the system.",
+    personalDetails: "Personal details", changeUsername: "Change username", newUsername: "New username",
+    usernameHelp: "Your new name will appear on posts, comments, and in the people directory.", saveChanges: "Save changes",
+    usernameUpdated: "Your username was updated.", profileUpdateError: "We couldn’t update your username.", usernameTooLong: "Your username can contain up to 80 characters.",
     makeItYours: "Make it yours", language: "Language", languageDescription: "Choose the interface language",
     appearance: "Appearance", appearanceDescription: "Light or dark mode", logoutDescription: "You can log in again at any time",
     lightMode: "Light mode", darkMode: "Dark mode", peopleWaiting: "People waiting", viewAll: "View all",
@@ -254,6 +260,7 @@ function errorTranslation(error, fallback = "genericError") {
   if (error?.status === 0 || raw === "network") return t("networkError");
   if (error?.status === 401) return raw.includes("invalid") ? t("invalidCredentials") : t("unauthorized");
   if (raw.includes("username already exists")) return t("usernameExists");
+  if (raw.includes("username is too long")) return t("usernameTooLong");
   if (raw.includes("missing username")) return t("missingCredentials");
   if (raw.includes("already following") || raw.includes("invalid request")) return t("alreadyRequested");
   if (raw.includes("request not found")) return t("requestHandleError");
@@ -416,6 +423,17 @@ function updateCurrentUserUI() {
     element.style.cssText = avatarStyle(state.username);
     element.setAttribute("aria-label", state.username || t("profile"));
   });
+  const profileInput = $("#profile-username");
+  if (profileInput && document.activeElement !== profileInput) profileInput.value = state.username;
+  updateProfileFormState();
+}
+
+function updateProfileFormState() {
+  const input = $("#profile-username");
+  const button = $("#profile-submit");
+  if (!input || !button || button.classList.contains("is-loading")) return;
+  const username = input.value.trim();
+  button.disabled = !username || username === state.username;
 }
 
 // ---------- Navigation and data ----------
@@ -431,6 +449,12 @@ function switchView(view, focus = true) {
   $$('[data-view-target]').forEach(button => button.classList.toggle("is-active", button.dataset.viewTarget === view));
   if (view === "people") renderPeople();
   if (view === "requests") loadFriendRequests();
+  if (view === "profile") {
+    $("#profile-username").value = state.username;
+    $("#profile-username-error").textContent = "";
+    $("#profile-username").removeAttribute("aria-invalid");
+    updateProfileFormState();
+  }
   if (focus) {
     $("#content")?.focus({ preventScroll: true });
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -810,6 +834,63 @@ function updateRequestBadges() {
   });
 }
 
+async function updateProfile(event) {
+  event.preventDefault();
+  const input = $("#profile-username");
+  const errorElement = $("#profile-username-error");
+  const button = $("#profile-submit");
+  const username = input.value.trim();
+
+  errorElement.textContent = "";
+  input.removeAttribute("aria-invalid");
+
+  if (!username) {
+    errorElement.textContent = t("requiredUsername");
+    input.setAttribute("aria-invalid", "true");
+    input.focus();
+    return;
+  }
+
+  if (username.length > 80) {
+    errorElement.textContent = t("usernameTooLong");
+    input.setAttribute("aria-invalid", "true");
+    input.focus();
+    return;
+  }
+
+  if (username === state.username) return;
+
+  setButtonLoading(button, true);
+  try {
+    const result = await apiFetch("/my/profile", {
+      method: "PUT",
+      headers: { "User-Id": String(state.userID) },
+      body: JSON.stringify({ username })
+    });
+    state.username = String(result.username);
+    localStorage.setItem(CONFIG.storage.username, state.username);
+
+    const currentUser = state.userMap.get(state.userID);
+    if (currentUser) currentUser.username = state.username;
+
+    input.value = state.username;
+    updateCurrentUserUI();
+    renderFeedState();
+    renderPeople();
+    renderRequestsState();
+    renderRequestsPreviewState();
+    showToast(t("usernameUpdated"), "success");
+  } catch (error) {
+    const message = errorTranslation(error, "profileUpdateError");
+    errorElement.textContent = message;
+    input.setAttribute("aria-invalid", "true");
+    showToast(message, "error");
+  } finally {
+    setButtonLoading(button, false);
+    updateProfileFormState();
+  }
+}
+
 // ---------- Events ----------
 
 function updatePostCounter() {
@@ -821,6 +902,12 @@ function updatePostCounter() {
 
 function bindEvents() {
   $("#auth-form").addEventListener("submit", submitAuth);
+  $("#profile-form").addEventListener("submit", updateProfile);
+  $("#profile-username").addEventListener("input", event => {
+    event.currentTarget.removeAttribute("aria-invalid");
+    $("#profile-username-error").textContent = "";
+    updateProfileFormState();
+  });
   $$('[data-auth-mode]').forEach(button => button.addEventListener("click", () => updateAuthMode(button.dataset.authMode)));
   $("#password-toggle").addEventListener("click", event => {
     const input = $("#password");

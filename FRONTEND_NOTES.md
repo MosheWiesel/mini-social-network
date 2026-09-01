@@ -26,6 +26,7 @@
 - `GET /posts/<user_id>`
 - `GET /my/requests` with the existing user-ID header contract
 - `PUT /my/requests/<follower_id>/<approve|reject>`
+- `PUT /my/profile` to update the logged-in username
 - `POST /friend-request/<follower_id>/<followed_id>`
 - `POST /my/post/add`, `/my/post/delete`, and `/my/post/comment` with the existing user-ID header contract
 

@@ -190,6 +190,51 @@ def handle_request(follower_id, action):
     finally:
         conn.close()
 
+@app.route("/my/profile", methods=["PUT"])
+def update_profile():
+    user_id = request.headers.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "Unauthorized - Missing User-ID header"}), 401
+
+    data = request.get_json(silent=True)
+    username = data.get("username", "").strip() if data else ""
+
+    if not username:
+        return jsonify({"error": "Missing username"}), 400
+
+    if len(username) > 80:
+        return jsonify({"error": "Username is too long"}), 400
+
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Invalid user ID"}), 400
+
+    conn = get_sql_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(
+            "UPDATE users SET username = ? WHERE userID = ?",
+            (username, user_id)
+        )
+
+        if cur.rowcount == 0:
+            return jsonify({"error": "User not found"}), 404
+
+        conn.commit()
+        return jsonify({
+            "message": "Profile updated successfully",
+            "userID": user_id,
+            "username": username
+        }), 200
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return jsonify({"error": "Username already exists"}), 400
+    finally:
+        conn.close()
+
 @app.route("/friend-request/<int:follower_id>/<int:followed_id>", methods=["POST"])
 def friend_request(follower_id, followed_id):
     conn = get_sql_connection()

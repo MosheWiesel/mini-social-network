@@ -171,6 +171,13 @@
               <div class="profile-cover"><span class="cover-shape cover-shape--one"></span><span class="cover-shape cover-shape--two"></span></div>
               <div class="profile-details"><div class="avatar avatar--xl" data-current-avatar>?</div><div><h2 dir="auto" data-current-username></h2><p data-current-id></p></div></div>
               <div class="profile-note"><svg class="icon"><use href="#i-user"/></svg><div><strong data-i18n="simpleProfile">פשוט ואמיתי</strong><p data-i18n="profileLimit">הפרופיל מציג רק מידע שקיים במערכת.</p></div></div>
+              <form id="profile-form" class="profile-editor" novalidate>
+                <div class="profile-editor-heading"><div><span class="eyebrow" data-i18n="personalDetails">פרטים אישיים</span><h3 data-i18n="changeUsername">שינוי שם משתמש</h3></div><p data-i18n="usernameHelp">השם החדש יוצג בפוסטים, בתגובות וברשימת האנשים.</p></div>
+                <div class="profile-editor-controls">
+                  <div class="field profile-field"><label for="profile-username" data-i18n="newUsername">שם משתמש חדש</label><input id="profile-username" name="username" type="text" autocomplete="username" maxlength="80" data-i18n-placeholder="usernamePlaceholder" required><p class="field-error" id="profile-username-error"></p></div>
+                  <button id="profile-submit" class="button button--primary" type="submit" disabled><span data-i18n="saveChanges">שמירת שינויים</span><span class="spinner"></span></button>
+                </div>
+              </form>
             </article>
           </section>
 
