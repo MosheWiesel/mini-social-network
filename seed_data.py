@@ -1,6 +1,9 @@
 import os
 import sqlite3
 from pymongo import MongoClient
+from werkzeug.security import generate_password_hash
+
+from social_app.migrations import migrate_sqlite
 
 
 # =========================
@@ -9,6 +12,11 @@ from pymongo import MongoClient
 
 sqlite_path = os.environ.get("SQLITE_PATH", "app.db")
 mongo_uri = os.environ.get("MONGO_URI", "mongodb://localhost:27017")
+
+if os.environ.get("APP_ENV", "development").lower() == "production":
+    raise RuntimeError("seed_data.py is disabled in production")
+
+migrate_sqlite(sqlite_path)
 
 conn = sqlite3.connect(sqlite_path)
 conn.execute("PRAGMA foreign_keys = ON")
@@ -36,13 +44,18 @@ for username, password in users:
 
     cur.execute(
         """
-        INSERT INTO users(username, password)
-        VALUES (?, ?)
+        INSERT INTO users(username, password, password_hash, created_at, updated_at)
+        VALUES (?, '', ?, datetime('now'), datetime('now'))
         """,
-        (username, password)
+        (username, generate_password_hash(password))
     )
 
     user_ids[username] = cur.lastrowid
+    cur.execute(
+        "INSERT INTO profiles(user_id, display_name, created_at, updated_at) VALUES (?, ?, datetime('now'), datetime('now'))",
+        (cur.lastrowid, username),
+    )
+    cur.execute("INSERT INTO notification_settings(user_id) VALUES (?)", (user_ids[username],))
 
 
 conn.commit()
