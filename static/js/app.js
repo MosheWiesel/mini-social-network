@@ -1,995 +1,222 @@
-"use strict";
+import {APIError, request, setCSRF, upload} from "./api.js";
+import {createI18n} from "./translations.js";
 
-// ---------- Configuration and state ----------
-
-const CONFIG = Object.freeze({
-  productName: "Circa",
-  storage: {
-    userID: "circa-user-id",
-    username: "circa-username",
-    language: "circa-language",
-    theme: "circa-theme"
-  },
-  requestTimeout: 12000,
-  toastDuration: 4200
-});
+const $ = (selector, root=document) => root.querySelector(selector);
+const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
+const escapeHTML = value => String(value ?? "").replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"})[char]);
+const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+const i18n = createI18n(localStorage.getItem("circa-language") || "he");
 
 const state = {
-  language: localStorage.getItem(CONFIG.storage.language) || "he",
-  theme: localStorage.getItem(CONFIG.storage.theme) || null,
-  userID: Number(localStorage.getItem(CONFIG.storage.userID)) || null,
-  username: localStorage.getItem(CONFIG.storage.username) || "",
-  authMode: "login",
-  activeView: "feed",
-  users: [],
-  userMap: new Map(),
-  posts: [],
-  requests: [],
-  feedStatus: "idle",
-  usersStatus: "idle",
-  requestsStatus: "idle",
-  sentRequests: new Set(),
-  replyTargets: new Map(),
-  deletePostID: null,
-  lastModalFocus: null
+  me:null, view:"feed", feed:"friends", feedCursor:null, posts:[], people:[], requests:{incoming:[],outgoing:[]},
+  requestTab:"incoming", mediaFiles:[], conversations:[], activeConversation:null, profile:null,
+  theme:localStorage.getItem("circa-theme") || "system", searchTimer:null, pollOpen:false, lastMentionQuery:null
 };
 
-const translations = {
-  he: {
-    eyebrow: "המקום לאנשים שלך", welcome: "טוב לראות אותך", tagline: "שיחות אמיתיות, בקצב שנעים לך.",
-    login: "כניסה", signup: "הרשמה", username: "שם משתמש", password: "סיסמה",
-    usernamePlaceholder: "למשל, noa", passwordPlaceholder: "הסיסמה שלך", loginButton: "כניסה לחשבון",
-    signupButton: "יצירת חשבון", authFootnote: "הסיסמה נשלחת רק לשרת הפרויקט ואינה נשמרת בדפדפן.",
-    showPassword: "הצגת סיסמה", hidePassword: "הסתרת סיסמה", toggleTheme: "החלפת מצב תצוגה", switchLanguage: "החלפת שפה",
-    authentication: "כניסה והרשמה", primaryNavigation: "ניווט ראשי", mobileNavigation: "ניווט למובייל",
-    home: "בית", people: "אנשים", requests: "בקשות", profile: "הפרופיל שלי", profileShort: "פרופיל", settings: "הגדרות",
-    logout: "יציאה", yourCircle: "המעגל שלך", createPost: "יצירת פוסט", composerPlaceholder: "מה עובר לך בראש?",
-    publish: "פרסום", discover: "לגלות ולהתחבר", searchPeople: "חיפוש אנשים", connections: "חיבורים שמחכים לך",
-    yourSpace: "המקום שלך", simpleProfile: "פשוט ואמיתי", profileLimit: "הפרופיל מציג רק מידע שקיים במערכת.",
-    personalDetails: "פרטים אישיים", changeUsername: "שינוי שם משתמש", newUsername: "שם משתמש חדש",
-    usernameHelp: "השם החדש יוצג בפוסטים, בתגובות וברשימת האנשים.", saveChanges: "שמירת שינויים",
-    usernameUpdated: "שם המשתמש עודכן בהצלחה.", profileUpdateError: "לא הצלחנו לעדכן את שם המשתמש.", usernameTooLong: "שם המשתמש יכול להכיל עד 80 תווים.",
-    makeItYours: "להרגיש בבית", language: "שפה", languageDescription: "בחרו את שפת הממשק",
-    appearance: "מראה", appearanceDescription: "מצב בהיר או כהה", logoutDescription: "ניתן להיכנס שוב בכל עת",
-    lightMode: "מצב בהיר", darkMode: "מצב כהה", peopleWaiting: "אנשים שמחכים", viewAll: "הכול",
-    smallCircle: "מעגל קטן. שיחות גדולות.", smallCircleCopy: "כאן רואים רק תוכן אמיתי מהאנשים המחוברים אליך.",
-    refresh: "רענון", close: "סגירה", delete: "מחיקה", cancel: "ביטול", deletePost: "מחיקת פוסט",
-    deletePostTitle: "למחוק את הפוסט?", deletePostDescription: "הפעולה תמחק גם את כל התגובות ולא ניתן לבטל אותה.",
-    requiredUsername: "יש להזין שם משתמש.", requiredPassword: "יש להזין סיסמה.", submitting: "רק רגע…",
-    loginSuccess: "נכנסת בהצלחה. טוב לראות אותך!", signupSuccess: "החשבון נוצר. עכשיו אפשר להיכנס.",
-    genericError: "משהו לא הסתדר. אפשר לנסות שוב.", networkError: "לא ניתן להתחבר לשרת. ודאו ש־Flask פועל ונסו שוב.",
-    timeoutError: "השרת לא הגיב בזמן. נסו שוב בעוד רגע.", invalidCredentials: "שם המשתמש או הסיסמה אינם נכונים.",
-    usernameExists: "שם המשתמש כבר קיים.", missingCredentials: "יש להזין שם משתמש וסיסמה.",
-    loadingFeed: "טוען את המעגל שלך", feedEmptyTitle: "עוד שקט כאן", feedEmptyCopy: "פוסטים של החברים המחוברים אליך יופיעו כאן.",
-    feedErrorTitle: "לא הצלחנו לטעון את הפיד", feedErrorCopy: "המידע לא זמין כרגע. אפשר לנסות שוב.", retry: "ניסיון נוסף",
-    postCreated: "הפוסט פורסם בהצלחה.", postDeleted: "הפוסט נמחק.", postCreateError: "לא הצלחנו לפרסם את הפוסט.",
-    comments: "תגובות", noComments: "עוד אין תגובות. אפשר להתחיל את השיחה.", commentPlaceholder: "כתיבת תגובה…",
-    reply: "תגובה", replyingTo: "תגובה ל־{name}", cancelReply: "ביטול תגובה", commentAdded: "התגובה נוספה.",
-    commentError: "לא הצלחנו להוסיף את התגובה.", deleteError: "לא הצלחנו למחוק את הפוסט.", unknownUser: "משתמש לא מוכר",
-    userNumber: "משתמש #{id}", sendRequest: "שליחת בקשה", sending: "שולח…", requestSent: "הבקשה נשלחה",
-    requestSentToast: "בקשת החברות נשלחה.", requestError: "לא הצלחנו לשלוח את הבקשה.",
-    peopleEmptyTitle: "אין אנשים נוספים", peopleEmptyCopy: "כאשר משתמשים נוספים יצטרפו, הם יופיעו כאן.",
-    noResultsTitle: "לא מצאנו התאמה", noResultsCopy: "נסו שם אחר או נקו את החיפוש.",
-    peopleErrorTitle: "לא הצלחנו לטעון אנשים", peopleErrorCopy: "רשימת המשתמשים אינה זמינה כרגע.",
-    requestsEmptyTitle: "אין בקשות ממתינות", requestsEmptyCopy: "כשתגיע בקשה חדשה, היא תופיע כאן.",
-    requestsErrorTitle: "לא הצלחנו לטעון בקשות", requestsErrorCopy: "הבקשות אינן זמינות כרגע.",
-    pendingRequest: "שלח/ה לך בקשת חברות", pendingOnly: "ממתינה לאישור", approve: "אישור", reject: "דחייה",
-    requestApproved: "בקשת החברות אושרה.", requestRejected: "בקשת החברות נדחתה.", requestHandleError: "לא הצלחנו לעדכן את הבקשה.",
-    noPreviewRequests: "אין בקשות חדשות כרגע.", loggedOut: "יצאת מהחשבון.", sessionRestored: "החשבון שוחזר.",
-    unauthorized: "הגישה נדחתה. נסו לצאת ולהיכנס שוב.", alreadyRequested: "כבר קיימת בקשה או שהפעולה אינה אפשרית.",
-    postNotFound: "הפוסט לא נמצא.", invalidPost: "מזהה הפוסט אינו תקין.", writeSomething: "יש לכתוב תוכן לפני הפרסום.",
-    welcomeBack: "שלום, {name}", loading: "טוען…"
-  },
-  en: {
-    eyebrow: "A place for your people", welcome: "Good to see you", tagline: "Real conversations, at your own pace.",
-    login: "Log in", signup: "Sign up", username: "Username", password: "Password",
-    usernamePlaceholder: "For example, noa", passwordPlaceholder: "Your password", loginButton: "Log in to your account",
-    signupButton: "Create account", authFootnote: "Your password is sent only to the project server and is never stored in the browser.",
-    showPassword: "Show password", hidePassword: "Hide password", toggleTheme: "Toggle display mode", switchLanguage: "Switch language",
-    authentication: "Log in and sign up", primaryNavigation: "Primary navigation", mobileNavigation: "Mobile navigation",
-    home: "Home", people: "People", requests: "Requests", profile: "My profile", profileShort: "Profile", settings: "Settings",
-    logout: "Log out", yourCircle: "Your circle", createPost: "Create post", composerPlaceholder: "What’s on your mind?",
-    publish: "Publish", discover: "Discover and connect", searchPeople: "Search people", connections: "Connections waiting for you",
-    yourSpace: "Your space", simpleProfile: "Simple and genuine", profileLimit: "This profile only shows information available in the system.",
-    personalDetails: "Personal details", changeUsername: "Change username", newUsername: "New username",
-    usernameHelp: "Your new name will appear on posts, comments, and in the people directory.", saveChanges: "Save changes",
-    usernameUpdated: "Your username was updated.", profileUpdateError: "We couldn’t update your username.", usernameTooLong: "Your username can contain up to 80 characters.",
-    makeItYours: "Make it yours", language: "Language", languageDescription: "Choose the interface language",
-    appearance: "Appearance", appearanceDescription: "Light or dark mode", logoutDescription: "You can log in again at any time",
-    lightMode: "Light mode", darkMode: "Dark mode", peopleWaiting: "People waiting", viewAll: "View all",
-    smallCircle: "A small circle. Bigger conversations.", smallCircleCopy: "See real posts from the people connected to you.",
-    refresh: "Refresh", close: "Close", delete: "Delete", cancel: "Cancel", deletePost: "Delete post",
-    deletePostTitle: "Delete this post?", deletePostDescription: "This will also delete every comment and cannot be undone.",
-    requiredUsername: "Please enter a username.", requiredPassword: "Please enter a password.", submitting: "One moment…",
-    loginSuccess: "You’re in. Good to see you!", signupSuccess: "Account created. You can log in now.",
-    genericError: "Something didn’t work. Please try again.", networkError: "Couldn’t reach the server. Make sure Flask is running and try again.",
-    timeoutError: "The server took too long to respond. Try again in a moment.", invalidCredentials: "That username or password is incorrect.",
-    usernameExists: "That username already exists.", missingCredentials: "Please enter a username and password.",
-    loadingFeed: "Loading your circle", feedEmptyTitle: "It’s quiet here", feedEmptyCopy: "Posts from your connected friends will appear here.",
-    feedErrorTitle: "We couldn’t load your feed", feedErrorCopy: "The feed isn’t available right now. You can try again.", retry: "Try again",
-    postCreated: "Your post was published.", postDeleted: "The post was deleted.", postCreateError: "We couldn’t publish your post.",
-    comments: "Comments", noComments: "No comments yet. You can start the conversation.", commentPlaceholder: "Write a comment…",
-    reply: "Reply", replyingTo: "Replying to {name}", cancelReply: "Cancel reply", commentAdded: "Your comment was added.",
-    commentError: "We couldn’t add your comment.", deleteError: "We couldn’t delete the post.", unknownUser: "Unknown user",
-    userNumber: "User #{id}", sendRequest: "Send request", sending: "Sending…", requestSent: "Request sent",
-    requestSentToast: "Friend request sent.", requestError: "We couldn’t send the friend request.",
-    peopleEmptyTitle: "No other people yet", peopleEmptyCopy: "New members will appear here when they join.",
-    noResultsTitle: "No match found", noResultsCopy: "Try another name or clear your search.",
-    peopleErrorTitle: "We couldn’t load people", peopleErrorCopy: "The user directory isn’t available right now.",
-    requestsEmptyTitle: "No pending requests", requestsEmptyCopy: "New friend requests will appear here.",
-    requestsErrorTitle: "We couldn’t load requests", requestsErrorCopy: "Requests aren’t available right now.",
-    pendingRequest: "Sent you a friend request", pendingOnly: "Waiting for approval", approve: "Approve", reject: "Reject",
-    requestApproved: "Friend request approved.", requestRejected: "Friend request rejected.", requestHandleError: "We couldn’t update the request.",
-    noPreviewRequests: "No new requests right now.", loggedOut: "You’re logged out.", sessionRestored: "Your session was restored.",
-    unauthorized: "Access was denied. Try logging out and back in.", alreadyRequested: "A request already exists or this action isn’t available.",
-    postNotFound: "The post could not be found.", invalidPost: "The post ID is invalid.", writeSomething: "Write something before publishing.",
-    welcomeBack: "Hello, {name}", loading: "Loading…"
-  }
-};
-
-const $ = (selector, root = document) => root.querySelector(selector);
-const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const t = (key, values = {}) => {
-  let value = translations[state.language]?.[key] ?? translations.en[key] ?? key;
-  Object.entries(values).forEach(([name, replacement]) => { value = value.replace(`{${name}}`, replacement); });
-  return value;
-};
-
-function escapeHTML(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, character => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;"
-  })[character]);
+function t(key){ return i18n.t(key); }
+function mediaUrl(id){ return id ? `/api/media/${encodeURIComponent(id)}` : ""; }
+function initials(name){ return [...String(name || "?").trim()][0]?.toUpperCase() || "?"; }
+function avatar(user, size="") {
+  const label = escapeHTML(user?.displayName || user?.username || "?");
+  if (user?.avatar) return `<span class="avatar ${size}"><img src="${mediaUrl(user.avatar)}" alt="${label}"></span>`;
+  return `<span class="avatar ${size}" aria-hidden="true">${escapeHTML(initials(label))}</span>`;
+}
+function announce(message){ $("#app-live").textContent = message; }
+function toast(message, type="info"){
+  const node=document.createElement("div"); node.className=`toast toast--${type}`; node.setAttribute("role",type==="error"?"alert":"status");
+  node.innerHTML=`<span class="toast-icon">${icon(type==="success"?"check":type==="error"?"x":"bell")}</span><p dir="auto">${escapeHTML(message)}</p><button class="icon-button toast-close" aria-label="Close">${icon("x")}</button>`;
+  $("#toast-region").append(node); const close=()=>{node.classList.add("is-leaving");setTimeout(()=>node.remove(),190)}; $(".toast-close",node).onclick=close; setTimeout(close,4300);
+}
+function empty(title, copy=""){ return `<div class="empty-state"><div><div class="empty-visual"></div><h2>${escapeHTML(title)}</h2>${copy?`<p>${escapeHTML(copy)}</p>`:""}</div></div>`; }
+function skeleton(count=3){ return Array.from({length:count},()=>`<div class="card skeleton-card"><div class="skeleton-header"><span class="skeleton skeleton-avatar"></span><span class="skeleton-lines"><i class="skeleton skeleton-line"></i><i class="skeleton skeleton-line skeleton-line--short"></i></span></div><div class="skeleton skeleton-body"></div><div class="skeleton skeleton-body"></div></div>`).join(""); }
+function errorMessage(error){ return error instanceof APIError || error instanceof Error ? error.message : t("genericError"); }
+function setLoading(button, value){ if(!button)return;button.classList.toggle("is-loading",value);button.disabled=value;button.setAttribute("aria-busy",String(value)); }
+function formatTime(value){
+  if(!value)return ""; const date=new Date(value), delta=Math.max(0,Date.now()-date.getTime()), minutes=Math.floor(delta/60000);
+  if(minutes<1)return t("justNow"); if(minutes<60)return `${minutes}m`; if(minutes<1440)return `${Math.floor(minutes/60)}h`;
+  return new Intl.DateTimeFormat(i18n.language,{dateStyle:"medium"}).format(date);
+}
+function linkify(text){
+  const source=String(text||""), regex=/([@#][\w.\-\u0590-\u05ff]{2,40})/gu; let result="", last=0;
+  for(const match of source.matchAll(regex)){ result+=escapeHTML(source.slice(last,match.index)); const token=match[0], value=token.slice(1); result+=token[0]==="@"?`<button class="inline-link" data-open-profile="${escapeHTML(value)}">@${escapeHTML(value)}</button>`:`<button class="inline-link" data-hashtag="${escapeHTML(value.toLowerCase())}">#${escapeHTML(value)}</button>`; last=match.index+token.length; }
+  return result+escapeHTML(source.slice(last));
 }
 
-function icon(name, className = "") {
-  return `<svg class="icon ${className}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+function applyLanguage(language, persist=true){
+  i18n.set(language); document.documentElement.lang=i18n.language; document.documentElement.dir=i18n.language==="he"?"rtl":"ltr";
+  if(persist)localStorage.setItem("circa-language",i18n.language);
+  $$('[data-i18n]').forEach(node=>node.textContent=t(node.dataset.i18n));
+  $$('[data-i18n-placeholder]').forEach(node=>node.placeholder=t(node.dataset.i18nPlaceholder));
+  $$('[data-language-label]').forEach(node=>node.textContent=i18n.language==="he"?"English":"עברית");
+  $$('[data-set-language]').forEach(node=>node.classList.toggle("is-active",node.dataset.setLanguage===i18n.language));
+  renderCurrent(); if(state.posts.length)renderPosts(state.posts,$("#feed-list"));
+}
+function actualTheme(){ return state.theme==="system"?(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):state.theme; }
+function applyTheme(theme, persist=true){ state.theme=["light","dark","system"].includes(theme)?theme:"system"; document.documentElement.dataset.theme=actualTheme(); if(persist)localStorage.setItem("circa-theme",state.theme); $$('[data-set-theme]').forEach(node=>node.classList.toggle("is-active",node.dataset.setTheme===state.theme)); }
+
+function renderCurrent(){
+  if(!state.me)return; $$('[data-current-display]').forEach(node=>node.textContent=state.me.displayName); $$('[data-current-username]').forEach(node=>node.textContent=`@${state.me.username}`);
+  $$('[data-current-avatar]').forEach(node=>{node.innerHTML=state.me.avatar?`<img src="${mediaUrl(state.me.avatar)}" alt="${escapeHTML(state.me.displayName)}">`:escapeHTML(initials(state.me.displayName));});
+}
+function showApp(){ $("#auth-screen").hidden=true; $("#main-app").hidden=false; renderCurrent(); const shared=new URLSearchParams(location.search).get("post");shared?openPostDetail(shared):navigateFromLocation(false); refreshBadges(); }
+function showAuth(){ $("#main-app").hidden=true; $("#auth-screen").hidden=false; }
+
+async function bootstrap(){
+  applyTheme(state.theme,false); applyLanguage(i18n.language,false); bindEvents();
+  try { const result=await request("/api/me"); setCSRF(result.csrfToken); state.me=result.user; result.user?showApp():showAuth(); }
+  catch(error){ showAuth(); toast(errorMessage(error),"error"); }
+  if("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js").catch(()=>{});
 }
 
-function initials(name) {
-  const clean = String(name || "?").trim();
-  return [...clean][0]?.toUpperCase() || "?";
+let authMode="login";
+function setAuthMode(mode){ authMode=mode==="signup"?"signup":"login"; $$('[data-auth-mode]').forEach(node=>{const active=node.dataset.authMode===authMode;node.classList.toggle("is-active",active);node.setAttribute("aria-selected",String(active));}); $("#auth-submit span").textContent=t(authMode==="login"?"loginButton":"signupButton"); $("#password").autocomplete=authMode==="login"?"current-password":"new-password"; $("#auth-message").textContent=""; }
+async function submitAuth(event){
+  event.preventDefault(); const username=$("#username").value.trim(), password=$("#password").value, button=$("#auth-submit");
+  $("#username-error").textContent=username?"":"Required"; $("#password-error").textContent=password?"":"Required"; if(!username||!password)return;
+  setLoading(button,true);
+  try{ const result=await request(`/api/auth/${authMode}`,{method:"POST",body:JSON.stringify({username,password})}); setCSRF(result.csrfToken);state.me=result.user;$("#auth-form").reset();showApp();toast(authMode==="login"?t("welcome"):t("signup"),"success"); }
+  catch(error){$("#auth-message").textContent=errorMessage(error);}
+  finally{setLoading(button,false);}
+}
+async function logout(){ try{await request("/api/auth/logout",{method:"POST"});}catch{} state.me=null;history.replaceState({},"","/");showAuth(); }
+
+const routePaths={feed:"/home/friends",explore:"/explore",search:"/search",people:"/people",requests:"/requests",messages:"/messages",notifications:"/notifications",bookmarks:"/bookmarks",profile:"/u/",settings:"/settings/profile"};
+function routeFromPath(){ const path=location.pathname; if(path.startsWith("/u/"))return "profile"; if(path.startsWith("/settings"))return "settings"; if(path.startsWith("/messages"))return "messages"; return Object.entries(routePaths).find(([,value])=>path.startsWith(value.split("/").slice(0,2).join("/")))?.[0]||"feed"; }
+function navigateFromLocation(focus=true){ const view=routeFromPath(); if(location.pathname==="/home/global")state.feed="global";else if(location.pathname.startsWith("/home/"))state.feed="friends";$$('[data-feed]').forEach(node=>node.classList.toggle('is-active',node.dataset.feed===state.feed));navigate(view,{push:false,focus,username:view==="profile"?decodeURIComponent(location.pathname.slice(3)):null}); }
+function navigate(view,{push=true,focus=true,username=null}={}){
+  if(!$(`[data-view="${view}"]`))view="feed"; state.view=view; $$('[data-view]').forEach(node=>node.hidden=node.dataset.view!==view); $$('[data-route]').forEach(node=>node.classList.toggle("is-active",node.dataset.route===view));
+  if(push){ let path=routePaths[view]||"/"; if(view==="profile")path=`/u/${encodeURIComponent(username||state.me.username)}`; history.pushState({},"",path); }
+  if(focus)$("#content").focus({preventScroll:true}); window.scrollTo({top:0,behavior:"smooth"});
+  if(view==="feed")loadFeed(false); else if(view==="explore")loadExplore(); else if(view==="people")loadPeople(); else if(view==="requests")loadRequests(); else if(view==="messages")loadConversations(); else if(view==="notifications")loadNotifications(); else if(view==="bookmarks")loadBookmarks(); else if(view==="profile")loadProfile(username||state.me.username); else if(view==="settings")loadSettings();
 }
 
-function avatarStyle(name) {
-  const palettes = [
-    ["#6d65e7", "#4e48b9"], ["#b46a91", "#874b6d"], ["#4e9b7b", "#33745a"],
-    ["#d17a55", "#a25437"], ["#498eae", "#326a86"], ["#9470c0", "#694a91"]
-  ];
-  const hash = [...String(name)].reduce((total, char) => total + char.codePointAt(0), 0);
-  const [first, second] = palettes[hash % palettes.length];
-  return `background:linear-gradient(145deg,${first},${second})`;
+async function loadFeed(append=false){
+  const container=$("#feed-list"); if(!append){container.innerHTML=skeleton();state.feedCursor=null;}
+  try{const query=new URLSearchParams({limit:"20"});if(append&&state.feedCursor)query.set("cursor",state.feedCursor);const result=await fetchEnvelope(`/api/feed/${state.feed}?${query}`);state.posts=append?[...state.posts,...result.data]:result.data;state.feedCursor=result.meta.nextCursor;renderPosts(state.posts,container);$("#load-more-feed").hidden=!state.feedCursor;}
+  catch(error){container.innerHTML=empty(t("genericError"),errorMessage(error));}
 }
-
-function avatarHTML(name, size = "") {
-  return `<span class="avatar ${size}" style="${avatarStyle(name)}" aria-hidden="true">${escapeHTML(initials(name))}</span>`;
+async function fetchEnvelope(path){
+  const response=await fetch(path,{credentials:"same-origin"});const payload=await response.json();if(!response.ok)throw new Error(payload?.error?.message||"Request failed");return payload;
 }
-
-function userName(userID) {
-  return state.userMap.get(Number(userID))?.username || t("unknownUser");
-}
-
-function setButtonLoading(button, loading) {
-  if (!button) return;
-  button.classList.toggle("is-loading", loading);
-  button.disabled = loading;
-  button.setAttribute("aria-busy", String(loading));
-}
-
-// ---------- Language and theme ----------
-
-function setLanguage(language, persist = true) {
-  state.language = language === "en" ? "en" : "he";
-  document.documentElement.lang = state.language;
-  document.documentElement.dir = state.language === "he" ? "rtl" : "ltr";
-  if (persist) localStorage.setItem(CONFIG.storage.language, state.language);
-
-  $$('[data-i18n]').forEach(element => { element.textContent = t(element.dataset.i18n); });
-  $$('[data-i18n-placeholder]').forEach(element => { element.placeholder = t(element.dataset.i18nPlaceholder); });
-  $$('[data-i18n-aria]').forEach(element => { element.setAttribute("aria-label", t(element.dataset.i18nAria)); });
-  $$('[data-language-label]').forEach(element => { element.textContent = state.language === "he" ? "English" : "עברית"; });
-  $$('[data-set-language]').forEach(button => button.classList.toggle("is-active", button.dataset.setLanguage === state.language));
-  document.title = CONFIG.productName;
-  updateAuthMode(state.authMode);
-  updateThemeLabels();
-  updateCurrentUserUI();
-
-  if (state.userID) {
-    renderFeedState();
-    renderPeople();
-    renderRequestsState();
-    renderRequestsPreviewState();
-  }
-}
-
-function initialTheme() {
-  if (state.theme === "light" || state.theme === "dark") return state.theme;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function setTheme(theme, persist = true) {
-  state.theme = theme === "dark" ? "dark" : "light";
-  document.documentElement.dataset.theme = state.theme;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", state.theme === "dark" ? "#101216" : "#f4f5f7");
-  if (persist) localStorage.setItem(CONFIG.storage.theme, state.theme);
-  updateThemeLabels();
-}
-
-function updateThemeLabels() {
-  $$('[data-theme-label]').forEach(element => { element.textContent = state.theme === "dark" ? t("lightMode") : t("darkMode"); });
-}
-
-function toggleTheme() {
-  setTheme(state.theme === "dark" ? "light" : "dark");
-}
-
-// ---------- API ----------
-
-class APIError extends Error {
-  constructor(message, status = 0, payload = null) {
-    super(message);
-    this.name = "APIError";
-    this.status = status;
-    this.payload = payload;
-  }
-}
-
-async function apiFetch(path, options = {}) {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), CONFIG.requestTimeout);
-  const headers = new Headers(options.headers || {});
-  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-
-  try {
-    const response = await fetch(path, { ...options, headers, signal: controller.signal });
-    const contentType = response.headers.get("content-type") || "";
-    const payload = contentType.includes("application/json") ? await response.json() : null;
-    if (!response.ok) throw new APIError(payload?.error || response.statusText, response.status, payload);
-    return payload;
-  } catch (error) {
-    if (error.name === "AbortError") throw new APIError("timeout", 408);
-    if (error instanceof APIError) throw error;
-    throw new APIError("network", 0);
-  } finally {
-    window.clearTimeout(timeout);
-  }
-}
-
-function errorTranslation(error, fallback = "genericError") {
-  const raw = String(error?.message || "").toLowerCase();
-  if (error?.status === 408 || raw === "timeout") return t("timeoutError");
-  if (error?.status === 0 || raw === "network") return t("networkError");
-  if (error?.status === 401) return raw.includes("invalid") ? t("invalidCredentials") : t("unauthorized");
-  if (raw.includes("username already exists")) return t("usernameExists");
-  if (raw.includes("username is too long")) return t("usernameTooLong");
-  if (raw.includes("missing username")) return t("missingCredentials");
-  if (raw.includes("already following") || raw.includes("invalid request")) return t("alreadyRequested");
-  if (raw.includes("request not found")) return t("requestHandleError");
-  if (raw.includes("post not found")) return t("postNotFound");
-  if (raw.includes("invalid post_id")) return t("invalidPost");
-  return t(fallback);
-}
-
-// ---------- Toasts and shared states ----------
-
-function showToast(message, type = "info") {
-  const region = $("#toast-region");
-  const toast = document.createElement("div");
-  toast.className = `toast toast--${type}`;
-  toast.setAttribute("role", type === "error" ? "alert" : "status");
-  toast.innerHTML = `
-    <span class="toast-icon">${icon(type === "success" ? "check" : type === "error" ? "x" : "bell")}</span>
-    <p dir="auto">${escapeHTML(message)}</p>
-    <button class="icon-button toast-close" type="button" aria-label="${escapeHTML(t("close"))}">${icon("x")}</button>`;
-  region.append(toast);
-  const dismiss = () => {
-    if (!toast.isConnected || toast.classList.contains("is-leaving")) return;
-    toast.classList.add("is-leaving");
-    window.setTimeout(() => toast.remove(), 190);
-  };
-  $(".toast-close", toast).addEventListener("click", dismiss);
-  window.setTimeout(dismiss, CONFIG.toastDuration);
-}
-
-function emptyState(titleKey, copyKey, retryAction = "", isError = false) {
-  return `<div class="empty-state ${isError ? "error-state" : ""}"><div><div class="empty-visual" aria-hidden="true"></div><h2>${escapeHTML(t(titleKey))}</h2><p>${escapeHTML(t(copyKey))}</p>${retryAction ? `<button class="button button--secondary button--small" type="button" data-retry="${retryAction}">${icon("refresh")}<span>${escapeHTML(t("retry"))}</span></button>` : ""}</div></div>`;
-}
-
-function renderSkeleton(container, count = 3) {
-  container.innerHTML = Array.from({ length: count }, () => `
-    <div class="card skeleton-card" aria-hidden="true"><div class="skeleton-header"><span class="skeleton skeleton-avatar"></span><span class="skeleton-lines"><i class="skeleton skeleton-line"></i><i class="skeleton skeleton-line skeleton-line--short"></i></span></div><div class="skeleton skeleton-body"></div><div class="skeleton skeleton-body"></div></div>`).join("");
-}
-
-function autoGrow(textarea) {
-  textarea.style.height = "auto";
-  textarea.style.height = `${Math.min(textarea.scrollHeight, Number.parseInt(getComputedStyle(textarea).maxHeight) || 220)}px`;
-}
-
-// ---------- Authentication ----------
-
-function updateAuthMode(mode) {
-  state.authMode = mode === "signup" ? "signup" : "login";
-  $$('[data-auth-mode]').forEach(button => {
-    const active = button.dataset.authMode === state.authMode;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-selected", String(active));
-  });
-  const password = $("#password");
-  if (password) password.autocomplete = state.authMode === "signup" ? "new-password" : "current-password";
-  const label = $("#auth-submit .button-label");
-  if (label) label.textContent = t(state.authMode === "login" ? "loginButton" : "signupButton");
-  clearAuthErrors();
-}
-
-function clearAuthErrors() {
-  $("#username-error").textContent = "";
-  $("#password-error").textContent = "";
-  $("#username").removeAttribute("aria-invalid");
-  $("#password").removeAttribute("aria-invalid");
-  const message = $("#auth-message");
-  message.textContent = "";
-  message.className = "form-message";
-}
-
-function validateAuth(username, password) {
-  clearAuthErrors();
-  let valid = true;
-  if (!username.trim()) {
-    $("#username-error").textContent = t("requiredUsername");
-    $("#username").setAttribute("aria-invalid", "true");
-    valid = false;
-  }
-  if (!password) {
-    $("#password-error").textContent = t("requiredPassword");
-    $("#password").setAttribute("aria-invalid", "true");
-    valid = false;
-  }
-  return valid;
-}
-
-async function submitAuth(event) {
-  event.preventDefault();
-  const username = $("#username").value.trim();
-  const password = $("#password").value;
-  if (!validateAuth(username, password)) return;
-
-  const button = $("#auth-submit");
-  const message = $("#auth-message");
-  setButtonLoading(button, true);
-  message.textContent = t("submitting");
-  message.className = "form-message";
-  try {
-    const result = await apiFetch(state.authMode === "login" ? "/login" : "/signup", {
-      method: "POST", body: JSON.stringify({ username, password })
-    });
-    $("#password").value = "";
-    if (state.authMode === "signup") {
-      message.textContent = t("signupSuccess");
-      message.classList.add("is-success");
-      updateAuthMode("login");
-      $("#username").value = username;
-      $("#password").focus();
-      showToast(t("signupSuccess"), "success");
-      return;
-    }
-    state.userID = Number(result.userID);
-    state.username = String(result.username || username);
-    localStorage.setItem(CONFIG.storage.userID, String(state.userID));
-    localStorage.setItem(CONFIG.storage.username, state.username);
-    showApplication();
-    showToast(t("loginSuccess"), "success");
-    await loadInitialData();
-  } catch (error) {
-    message.textContent = errorTranslation(error);
-    message.className = "form-message";
-  } finally {
-    setButtonLoading(button, false);
-  }
-}
-
-function logout() {
-  localStorage.removeItem(CONFIG.storage.userID);
-  localStorage.removeItem(CONFIG.storage.username);
-  state.userID = null;
-  state.username = "";
-  state.users = [];
-  state.userMap.clear();
-  state.posts = [];
-  state.requests = [];
-  state.feedStatus = "idle";
-  state.usersStatus = "idle";
-  state.requestsStatus = "idle";
-  state.sentRequests.clear();
-  $("#main-app").hidden = true;
-  $("#auth-screen").hidden = false;
-  $("#auth-form").reset();
-  updateAuthMode("login");
-  $("#username").focus();
-  showToast(t("loggedOut"), "info");
-}
-
-function showApplication() {
-  $("#auth-screen").hidden = true;
-  $("#main-app").hidden = false;
-  updateCurrentUserUI();
-  switchView("feed", false);
-}
-
-function updateCurrentUserUI() {
-  $$('[data-product-name]').forEach(element => { element.textContent = CONFIG.productName; });
-  $$('[data-current-username]').forEach(element => { element.textContent = state.username; });
-  $$('[data-current-id]').forEach(element => { element.textContent = state.userID ? t("userNumber", { id: state.userID }) : ""; });
-  $$('[data-current-avatar]').forEach(element => {
-    element.textContent = initials(state.username);
-    element.style.cssText = avatarStyle(state.username);
-    element.setAttribute("aria-label", state.username || t("profile"));
-  });
-  const profileInput = $("#profile-username");
-  if (profileInput && document.activeElement !== profileInput) profileInput.value = state.username;
-  updateProfileFormState();
-}
-
-function updateProfileFormState() {
-  const input = $("#profile-username");
-  const button = $("#profile-submit");
-  if (!input || !button || button.classList.contains("is-loading")) return;
-  const username = input.value.trim();
-  button.disabled = !username || username === state.username;
-}
-
-// ---------- Navigation and data ----------
-
-function switchView(view, focus = true) {
-  if (!$( `[data-view="${view}"]` )) return;
-  state.activeView = view;
-  $$('[data-view]').forEach(section => {
-    const active = section.dataset.view === view;
-    section.hidden = !active;
-    section.classList.toggle("is-active", active);
-  });
-  $$('[data-view-target]').forEach(button => button.classList.toggle("is-active", button.dataset.viewTarget === view));
-  if (view === "people") renderPeople();
-  if (view === "requests") loadFriendRequests();
-  if (view === "profile") {
-    $("#profile-username").value = state.username;
-    $("#profile-username-error").textContent = "";
-    $("#profile-username").removeAttribute("aria-invalid");
-    updateProfileFormState();
-  }
-  if (focus) {
-    $("#content")?.focus({ preventScroll: true });
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-}
-
-async function loadInitialData() {
-  renderSkeleton($("#feed-list"), 3);
-  $("#requests-preview").innerHTML = `<p class="context-empty">${escapeHTML(t("loading"))}</p>`;
-  try {
-    await loadUsers();
-    renderPeople();
-  } catch (error) {
-    $("#people-list").innerHTML = emptyState("peopleErrorTitle", "peopleErrorCopy", "people", true);
-  }
-  await Promise.allSettled([loadFeed(), loadFriendRequests()]);
-}
-
-async function loadUsers(force = false) {
-  if (state.users.length && !force) return state.users;
-  state.usersStatus = "loading";
-  try {
-    const users = await apiFetch("/users");
-    state.users = Array.isArray(users) ? users : [];
-    state.userMap = new Map(state.users.map(user => [Number(user.userID), user]));
-    state.usersStatus = "success";
-    return state.users;
-  } catch (error) {
-    state.usersStatus = "error";
-    throw error;
-  }
-}
-
-async function loadFeed() {
-  const container = $("#feed-list");
-  state.feedStatus = "loading";
-  renderSkeleton(container, 3);
-  try {
-    const posts = await apiFetch(`/posts/${encodeURIComponent(state.userID)}`);
-    state.posts = Array.isArray(posts) ? posts : [];
-    state.feedStatus = "success";
-    renderFeed(state.posts);
-  } catch (error) {
-    state.feedStatus = "error";
-    container.innerHTML = emptyState("feedErrorTitle", "feedErrorCopy", "feed", true);
-  }
-}
-
-function renderFeedState() {
-  const container = $("#feed-list");
-  if (!container) return;
-  if (state.feedStatus === "loading") renderSkeleton(container, 3);
-  else if (state.feedStatus === "error") container.innerHTML = emptyState("feedErrorTitle", "feedErrorCopy", "feed", true);
-  else renderFeed(state.posts);
-}
-
-function renderFeed(posts) {
-  const container = $("#feed-list");
-  if (!posts.length) {
-    container.innerHTML = `<div class="card">${emptyState("feedEmptyTitle", "feedEmptyCopy")}</div>`;
-    return;
-  }
-  const fragment = document.createDocumentFragment();
-  posts.forEach(post => fragment.append(renderPost(post)));
-  container.replaceChildren(fragment);
-}
-
-function renderPost(post) {
-  const article = document.createElement("article");
-  const postID = String(post._id || "");
-  const author = userName(post.userID);
-  const comments = Array.isArray(post.comments) ? post.comments : [];
-  const owned = Number(post.userID) === state.userID;
-  article.className = "post-card card";
-  article.dataset.postId = postID;
-  article.innerHTML = `
-    <div class="post-main">
-      <header class="post-header">
-        ${avatarHTML(author)}
-        <div class="post-author"><strong dir="auto">${escapeHTML(author)}</strong><span>${escapeHTML(t("userNumber", { id: post.userID }))}</span></div>
-        ${owned ? `<button class="icon-button post-delete" type="button" data-delete-post="${escapeHTML(postID)}" aria-label="${escapeHTML(t("deletePost"))}">${icon("trash")}</button>` : ""}
-      </header>
-      <p class="post-content" dir="auto">${escapeHTML(post.content)}</p>
-      <div class="post-meta">${icon("message")}<span>${comments.length} ${escapeHTML(t("comments"))}</span></div>
-    </div>
-    <section class="comments-section" aria-label="${escapeHTML(t("comments"))}">
-      <div class="comments-list">${renderComments(comments)}</div>
-      <form class="comment-composer" data-comment-form="${escapeHTML(postID)}">
-        ${avatarHTML(state.username, "avatar--sm")}
-        <div class="comment-input-wrap">
-          <div class="replying-to"><span data-reply-label></span><button class="cancel-reply" type="button" data-cancel-reply="${escapeHTML(postID)}" aria-label="${escapeHTML(t("cancelReply"))}">${icon("x")}</button></div>
-          <label class="sr-only" for="comment-${escapeHTML(postID)}">${escapeHTML(t("commentPlaceholder"))}</label>
-          <textarea class="comment-input" id="comment-${escapeHTML(postID)}" name="comment" rows="1" maxlength="1000" data-post-id="${escapeHTML(postID)}" placeholder="${escapeHTML(t("commentPlaceholder"))}"></textarea>
-        </div>
-        <button class="comment-submit" type="submit" disabled aria-label="${escapeHTML(t("publish"))}">${icon("send")}<span class="spinner"></span></button>
-      </form>
-    </section>`;
+async function openPostDetail(postId){navigate("feed",{push:false});const container=$("#feed-list");container.innerHTML=skeleton(1);try{const post=await request(`/api/posts/${encodeURIComponent(postId)}`);state.posts=[post];renderPosts(state.posts,container);history.replaceState({},"",`/?post=${encodeURIComponent(postId)}`);}catch(error){container.innerHTML=empty(errorMessage(error));}}
+function renderPosts(posts,container){ if(!posts.length){container.innerHTML=empty(t("emptyFeed"),t(state.feed==="friends"?"emptyFriends":"emptyGlobal"));return;} const fragment=document.createDocumentFragment();posts.forEach(post=>fragment.append(renderPost(post)));container.replaceChildren(fragment); }
+function visibilityIcon(value){return value==="public"?"globe":value==="friends"?"users":"user";}
+function renderPost(post){
+  const article=document.createElement("article");article.className="post-card card";article.dataset.postId=post.id;
+  const media=post.media?.length?`<div class="post-media">${post.media.map(item=>item.kind==="video"?`<video src="${item.url}" controls preload="metadata"></video>`:`<img src="${item.url}" alt="" loading="lazy">`).join("")}</div>`:"";
+  const poll=post.poll?renderPoll(post):"";
+  article.innerHTML=`<div class="post-main"><header class="post-header"><button data-open-profile="${escapeHTML(post.author.username)}">${avatar(post.author)}</button><div class="post-author"><button class="post-author-link" data-open-profile="${escapeHTML(post.author.username)}" dir="auto">${escapeHTML(post.author.displayName)}</button><span><span class="post-visibility">${icon(visibilityIcon(post.visibility))}</span> · ${escapeHTML(formatTime(post.createdAt))}${post.edited?` · ${t("edited")}`:""}</span></div><div class="post-menu-wrap"><button class="icon-button" data-menu-post="${post.id}" aria-label="More">${icon("more")}</button><div class="post-menu" hidden>${post.canEdit?`<button data-edit-post="${post.id}">${t("edit")}</button><button data-delete-post="${post.id}">${t("delete")}</button>`:`<button data-report="post" data-target-id="${post.id}">${t("report")}</button>`}</div></div></header><p class="post-content" dir="auto">${linkify(post.content)}</p>${media}${poll}</div><div class="post-actions"><button class="post-action ${post.reacted?"is-active":""}" data-react-post="${post.id}">${icon("heart")}<span>${t("like")}</span><b class="action-count">${post.reactionCount||""}</b></button><button class="post-action" data-focus-comment="${post.id}">${icon("message")}<span>${t("comments")}</span><b class="action-count">${post.commentCount||""}</b></button><button class="post-action ${post.bookmarked?"is-active":""}" data-bookmark-post="${post.id}">${icon("bookmark")}<span>${t("bookmark")}</span></button><button class="post-action" data-share-post="${post.id}" aria-label="${t("share")}">${icon("send")}</button></div><section class="comments-section"><div class="comments-list">${renderComments(post.comments||[])}</div>${post.commentCount>(post.comments?.length||0)?`<button class="text-button" data-load-comments="${post.id}">${t("loadMore")}</button>`:""}<form class="comment-composer" data-comment-form="${post.id}">${avatar(state.me,"avatar--sm")}<div class="comment-input-wrap"><div class="replying-to"><span data-reply-label></span><button type="button" class="cancel-reply" data-cancel-reply>${icon("x")}</button></div><textarea class="comment-input" maxlength="1500" placeholder="${t("commentPlaceholder")}"></textarea><input type="hidden" name="parentId"></div><button class="comment-submit" disabled>${icon("send")}<span class="spinner"></span></button></form></section>`;
   return article;
 }
+function renderPoll(post){const total=post.poll.totalVotes||0;return `<div class="poll-card"><strong dir="auto">${escapeHTML(post.poll.question)}</strong>${post.poll.options.map((option,index)=>{const votes=post.poll.totals?.[index]||0,percent=total?Math.round(votes/total*100):0;return `<button class="poll-choice ${post.poll.ownVote===index?"is-selected":""}" style="--poll-percent:${percent}%" data-vote-post="${post.id}" data-option="${index}" ${post.poll.ownVote!==null&&post.poll.ownVote!==undefined?"disabled":""}><span><span dir="auto">${escapeHTML(option)}</span><b>${percent}%</b></span></button>`}).join("")}<span class="poll-total">${total} ${t("votes")}</span></div>`;}
+function buildTree(comments){const map=new Map(comments.map(item=>[item.id,{...item,children:[]}])),roots=[];map.forEach(item=>{const parent=map.get(item.parentId);parent&&parent!==item?parent.children.push(item):roots.push(item)});return roots;}
+function renderComments(comments){if(!comments.length)return "";const node=(comment,depth=0)=>`<div class="comment" style="--depth:${Math.min(depth,3)}" data-depth="${Math.min(depth,3)}" data-comment-id="${comment.id}">${avatar(comment.author,"avatar--sm")}<div class="comment-bubble"><button class="comment-author" data-open-profile="${escapeHTML(comment.author.username)}">${escapeHTML(comment.author.displayName)}</button><p class="comment-content ${comment.deleted?"comment-deleted":""}" dir="auto">${comment.deleted?t("deletedComment"):linkify(comment.content)}</p>${comment.deleted?"":`<div class="comment-actions"><button data-reply-comment="${comment.id}">${t("reply")}</button><button class="${comment.reacted?"is-active":""}" data-react-comment="${comment.id}">${icon("heart")} ${comment.reactionCount||""}</button>${comment.canEdit?`<button data-edit-comment="${comment.id}">${t("edit")}</button><button data-delete-comment="${comment.id}">${t("delete")}</button>`:`<button data-report="comment" data-target-id="${comment.id}">${t("report")}</button>`}</div>`}</div></div>${comment.children.map(child=>node(child,depth+1)).join("")}`;return buildTree(comments).map(item=>node(item)).join("");}
 
-function buildCommentTree(comments) {
-  const nodes = new Map();
-  comments.forEach(comment => nodes.set(String(comment._id), { ...comment, children: [] }));
-  const roots = [];
-  nodes.forEach(node => {
-    const parentID = node.replyTo ? String(node.replyTo) : null;
-    const parent = parentID ? nodes.get(parentID) : null;
-    if (parent && parent !== node) parent.children.push(node);
-    else roots.push(node);
-  });
-  return roots;
+async function createPost(){
+  const button=$("#create-post"), content=$("#post-content").value.trim(); setLoading(button,true);
+  try{const media=[];for(const file of state.mediaFiles){const result=await upload(file,{kind:"post"},percent=>{const bar=$(`[data-preview-name="${CSS.escape(file.name)}"] .upload-progress span`);if(bar)bar.style.width=`${percent}%`;});media.push(result.id);}let poll=null;if(state.pollOpen){const options=$$(".poll-option input").map(input=>input.value.trim()).filter(Boolean);poll={question:$("#poll-question").value.trim()||content,options};}const post=await request("/api/posts",{method:"POST",body:JSON.stringify({content,visibility:$("#post-visibility").value,media,poll})});state.posts.unshift(post);renderPosts(state.posts,$("#feed-list"));resetComposer();toast(t("published"),"success");}
+  catch(error){toast(errorMessage(error),"error");}finally{setLoading(button,false);updateComposerState();}
+}
+function resetComposer(){state.mediaFiles=[];state.pollOpen=false;$("#post-content").value="";$("#post-media").value="";$("#media-preview").hidden=true;$("#media-preview").replaceChildren();$("#poll-editor").hidden=true;$("#poll-question").value="";$("#poll-options").replaceChildren();}
+function updateComposerState(){$("#create-post").disabled=!$("#post-content").value.trim()&&!state.mediaFiles.length&&!state.pollOpen;}
+function addPollOption(value=""){if($$(".poll-option").length>=6)return;const row=document.createElement("div");row.className="poll-option";row.innerHTML=`<input maxlength="100" value="${escapeHTML(value)}"><button type="button" data-remove-poll-option aria-label="Remove">${icon("x")}</button>`;$("#poll-options").append(row);}
+function previewMedia(files){state.mediaFiles=[...state.mediaFiles,...files].slice(0,6);const preview=$("#media-preview");preview.hidden=!state.mediaFiles.length;preview.innerHTML=state.mediaFiles.map((file,index)=>`<div class="media-preview-item" data-preview-name="${escapeHTML(file.name)}">${file.type.startsWith("video/")?`<video src="${URL.createObjectURL(file)}"></video>`:`<img src="${URL.createObjectURL(file)}" alt="">`}<button data-remove-media="${index}" aria-label="Remove">${icon("x")}</button><div class="upload-progress"><span></span></div></div>`).join("");updateComposerState();}
+
+async function loadPeople(query=""){const container=$("#people-list");container.innerHTML=skeleton(2);try{state.people=await request(`/api/users?q=${encodeURIComponent(query)}`);container.innerHTML=state.people.length?state.people.map(user=>personRow(user)).join(""):empty(t("noResults"));}catch(error){container.innerHTML=empty(errorMessage(error));}}
+function personRow(user){let action="";if(user.friendshipState==="none")action=`<button class="button button--secondary button--small" data-send-request="${user.id}">${icon("plus-user")}<span>${t("requests")}</span></button>`;else if(user.friendshipState==="outgoing")action=`<button class="button button--secondary button--small" data-cancel-request="${user.id}">${t("cancel")}</button>`;else if(user.friendshipState==="incoming")action=`<button class="button button--primary button--small" data-request-action="accept" data-user-id="${user.id}">${t("accept")}</button>`;else if(user.friendshipState==="friends")action=`<button class="button button--secondary button--small" data-message-user="${user.id}">${t("message")}</button>`;return `<div class="directory-row"><button data-open-profile="${escapeHTML(user.username)}">${avatar(user)}</button><div class="directory-copy"><button class="post-author-link" data-open-profile="${escapeHTML(user.username)}">${escapeHTML(user.displayName)}</button><span>@${escapeHTML(user.username)}</span></div>${action}</div>`;}
+async function loadRequests(){const container=$("#requests-list");container.innerHTML=skeleton(2);try{state.requests=await request("/api/friend-requests");renderRequests();const count=state.requests.incoming.length;$$('[data-request-badge]').forEach(node=>{node.hidden=!count;node.textContent=count});$("#requests-preview").innerHTML=state.requests.incoming.slice(0,3).map(item=>`<div class="preview-row">${avatar(item.user,"avatar--xs")}<div class="preview-copy"><strong>${escapeHTML(item.user.displayName)}</strong><span>${formatTime(item.createdAt)}</span></div></div>`).join("")||`<p class="context-empty">${t("noResults")}</p>`;}catch(error){container.innerHTML=empty(errorMessage(error));}}
+function renderRequests(){const list=state.requests[state.requestTab]||[];$("#requests-list").innerHTML=list.length?list.map(item=>`<div class="directory-row">${avatar(item.user)}<div class="directory-copy"><button class="post-author-link" data-open-profile="${escapeHTML(item.user.username)}">${escapeHTML(item.user.displayName)}</button><span>@${escapeHTML(item.user.username)}</span></div><div class="request-actions">${state.requestTab==="incoming"?`<button class="button button--secondary button--small" data-request-action="reject" data-user-id="${item.user.id}">${t("reject")}</button><button class="button button--primary button--small" data-request-action="accept" data-user-id="${item.user.id}">${t("accept")}</button>`:`<button class="button button--secondary button--small" data-request-action="cancel" data-user-id="${item.user.id}">${t("cancel")}</button>`}</div></div>`).join(""):empty(t("noResults"));}
+
+async function loadExplore(){const posts=$("#explore-posts");posts.innerHTML=skeleton();try{const result=await request("/api/explore");renderTrends(result.hashtags);renderPosts(result.posts,posts);}catch(error){posts.innerHTML=empty(errorMessage(error));}}
+function renderTrends(tags){const html=tags.length?tags.map(item=>`<button class="trend-pill" data-hashtag="${escapeHTML(item.tag)}">#${escapeHTML(item.tag)} · ${item.count}</button>`).join(""):empty(t("noResults"));$("#trends").innerHTML=html;$("#trends-preview").innerHTML=tags.slice(0,5).map(item=>`<button class="context-hashtag" data-hashtag="${escapeHTML(item.tag)}">#${escapeHTML(item.tag)}<span>${item.count}</span></button>`).join("");}
+async function runSearch(query){const container=$("#search-results");if(query.length<2){container.innerHTML="";return;}container.innerHTML=skeleton(2);try{const result=await request(`/api/search?q=${encodeURIComponent(query)}`);container.innerHTML=`<section class="search-group"><h2>${t("usersGroup")}</h2><div class="directory card">${result.users.length?result.users.map(personRow).join(""):empty(t("noResults"))}</div></section><section class="search-group"><h2>${t("hashtagsGroup")}</h2><div class="trend-list">${result.hashtags.map(item=>`<button class="trend-pill" data-hashtag="${escapeHTML(item.tag)}">#${escapeHTML(item.tag)} · ${item.count}</button>`).join("")||t("noResults")}</div></section><section class="search-group"><h2>${t("postsGroup")}</h2><div id="search-posts" class="feed-list"></div></section>`;renderPosts(result.posts,$("#search-posts"));}catch(error){container.innerHTML=empty(errorMessage(error));}}
+async function openHashtag(tag){navigate("search");$("#global-search").value=`#${tag}`;const container=$("#search-results");container.innerHTML=skeleton();try{const posts=await request(`/api/hashtags/${encodeURIComponent(tag)}/posts`);container.innerHTML=`<section class="search-group"><h2>#${escapeHTML(tag)}</h2><div id="hashtag-posts" class="feed-list"></div></section>`;renderPosts(posts,$("#hashtag-posts"));}catch(error){container.innerHTML=empty(errorMessage(error));}}
+
+async function loadProfile(username){const card=$("#profile-card"),posts=$("#profile-posts");posts.innerHTML=skeleton();try{state.profile=await request(`/api/users/${encodeURIComponent(username)}`);renderProfile(state.profile);const items=await request(`/api/users/${encodeURIComponent(username)}/posts`);renderPosts(items,posts);}catch(error){card.innerHTML=empty(errorMessage(error));posts.replaceChildren();}}
+function renderProfile(user){const own=user.id===state.me.id, cover=$('[data-profile-cover]');cover.classList.toggle("has-image",!!user.coverImage);cover.style.backgroundImage=user.coverImage?`url("${mediaUrl(user.coverImage)}")`:"";$('[data-profile-avatar]').innerHTML=user.avatar?`<img src="${mediaUrl(user.avatar)}" alt="">`:initials(user.displayName);$('[data-profile-display]').textContent=user.displayName;$('[data-profile-username]').textContent=`@${user.username}`;$('[data-profile-bio]').textContent=user.bio||"";$('[data-profile-meta]').innerHTML=[user.location?`<span>${escapeHTML(user.location)}</span>`:"",user.website?`<a href="${escapeHTML(user.website)}" target="_blank" rel="noopener">${escapeHTML(user.website)}</a>`:""].join("");$$('[data-owner-only]').forEach(node=>node.hidden=!own);const action=$('[data-profile-action]');action.dataset.userId=user.id;action.dataset.profileAction=user.friendshipState;action.textContent=own?t("editProfile"):{none:t("requests"),outgoing:t("cancel"),incoming:t("accept"),friends:t("unfriend"),blocked:t("unblock")}[user.friendshipState]||"";$('[data-message-user]').hidden=own||!["friends","none"].includes(user.friendshipState);$('[data-message-user]').dataset.messageUser=user.id;$('[data-block-user]').hidden=own;$('[data-block-user]').dataset.blockUser=user.id;}
+
+async function loadConversations(){const list=$("#conversation-list");list.innerHTML=skeleton(3);try{state.conversations=await request("/api/conversations");const unread=state.conversations.reduce((sum,item)=>sum+item.unread,0);$$('[data-message-badge]').forEach(node=>{node.hidden=!unread;node.textContent=unread>99?"99+":unread});list.innerHTML=state.conversations.length?state.conversations.map(item=>{const other=item.participants.find(user=>user.id!==state.me.id)||state.me;return `<button class="conversation-row" data-conversation-id="${item.id}">${avatar(other)}<span class="conversation-copy"><strong>${escapeHTML(other.displayName)}</strong><span>${escapeHTML(item.lastMessage?.content||"")}</span></span>${item.unread?`<b class="unread-dot">${item.unread}</b>`:""}</button>`}).join(""):empty(t("chooseConversation"));const pathId=Number(location.pathname.split("/")[2]);if(pathId)openConversation(pathId);}catch(error){list.innerHTML=empty(errorMessage(error));}}
+async function openConversation(id){state.activeConversation=id;$$('.conversation-row').forEach(node=>node.classList.toggle("is-active",Number(node.dataset.conversationId)===id));history.pushState({},"",`/messages/${id}`);const thread=$("#message-thread");thread.innerHTML=skeleton(3);try{const response=await fetchEnvelope(`/api/conversations/${id}/messages`),messages=response.data,other=response.meta.participants.find(user=>user.id!==state.me.id)||state.me;thread.innerHTML=`<header class="thread-header">${avatar(other,"avatar--sm")}<strong>${escapeHTML(other.displayName)}</strong></header><div class="message-list">${messages.map(message=>`<div class="message-bubble ${message.senderId===state.me.id?"is-own":""}" dir="auto">${linkify(message.content)}${message.media?.map(media=>`<img src="${mediaUrl(media)}" alt="">`).join("")||""}<time>${formatTime(message.createdAt)}</time></div>`).join("")}</div><form class="message-form" data-message-form="${id}"><label class="message-attach" aria-label="${t("media")}">${icon("image")}<input class="message-media" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden></label><input maxlength="4000" placeholder="${t("typeMessage")}"><span class="message-file" hidden></span><button class="comment-submit">${icon("send")}</button></form>`;const messagesNode=$(".message-list",thread);messagesNode.scrollTop=messagesNode.scrollHeight;loadConversationsBadgesOnly();}catch(error){thread.innerHTML=empty(errorMessage(error));}}
+async function startConversation(userId){try{const result=await request("/api/conversations",{method:"POST",body:JSON.stringify({userId:Number(userId)})});navigate("messages");setTimeout(()=>openConversation(result.id),100);}catch(error){toast(errorMessage(error),"error");}}
+async function sendMessage(form){const input=$("input:not([type=file])",form),content=input.value.trim(),media=form.dataset.mediaId?[form.dataset.mediaId]:[];if(!content&&!media.length)return;const button=$("button",form);setLoading(button,true);try{await request(`/api/conversations/${form.dataset.messageForm}/messages`,{method:"POST",body:JSON.stringify({content,media})});input.value="";delete form.dataset.mediaId;await openConversation(Number(form.dataset.messageForm));}catch(error){toast(errorMessage(error),"error");}finally{setLoading(button,false);}}
+async function loadConversationsBadgesOnly(){try{const items=await request("/api/conversations");const unread=items.reduce((sum,item)=>sum+item.unread,0);$$('[data-message-badge]').forEach(node=>{node.hidden=!unread;node.textContent=unread});}catch{}}
+
+async function loadNotifications(){const list=$("#notification-list");list.innerHTML=skeleton(3);try{const response=await fetchEnvelope("/api/notifications");const items=response.data;updateNotificationBadge(response.meta.unread);list.innerHTML=items.length?items.map(item=>`<button class="directory-row notification-row ${item.read?"":"is-unread"}" data-notification-id="${item.id}" data-notification-kind="${item.kind}" data-actor-username="${escapeHTML(item.actor?.username||"")}" data-notification-target='${escapeHTML(JSON.stringify(item.target))}'>${avatar(item.actor||{displayName:"?"})}<span class="directory-copy"><strong>${item.actor?`${escapeHTML(item.actor.displayName)} `:""}${t(`notification_${item.kind}`)}</strong><time>${formatTime(item.createdAt)}</time></span></button>`).join(""):empty(t("noResults"));}catch(error){list.innerHTML=empty(errorMessage(error));}}
+function updateNotificationBadge(count){$$('[data-notification-badge]').forEach(node=>{node.hidden=!count;node.textContent=count>99?"99+":count});}
+async function refreshBadges(){loadRequests();loadConversationsBadgesOnly();try{const response=await fetchEnvelope("/api/notifications?limit=1");updateNotificationBadge(response.meta.unread);}catch{}}
+async function loadBookmarks(){const list=$("#bookmarks-list");list.innerHTML=skeleton();try{renderPosts(await request("/api/bookmarks"),list);}catch(error){list.innerHTML=empty(errorMessage(error));}}
+
+async function loadSettings(){const me=(await request("/api/me")).user;state.me=me;renderCurrent();$("#profile-display").value=me.displayName;$("#profile-username").value=me.username;$("#profile-bio").value=me.bio||"";$("#profile-location").value=me.location||"";$("#profile-website").value=me.website||"";$("#profile-visibility").value=me.profileVisibility;$("#message-privacy").value=me.messagePrivacy;loadBlocks();}
+async function saveProfile(event){event.preventDefault();const button=$("button[type=submit]",event.currentTarget);setLoading(button,true);try{state.me=await request("/api/me/profile",{method:"PUT",body:JSON.stringify({displayName:$("#profile-display").value,username:$("#profile-username").value,bio:$("#profile-bio").value,location:$("#profile-location").value,website:$("#profile-website").value})});renderCurrent();history.replaceState({},"",`/u/${encodeURIComponent(state.me.username)}`);toast(t("profileSaved"),"success");}catch(error){toast(errorMessage(error),"error");}finally{setLoading(button,false);}}
+async function savePrivacy(event){event.preventDefault();try{await request("/api/me/privacy",{method:"PUT",body:JSON.stringify({profileVisibility:$("#profile-visibility").value,messagePrivacy:$("#message-privacy").value,friendRequestPrivacy:"everyone"})});toast(t("privacySaved"),"success");}catch(error){toast(errorMessage(error),"error");}}
+async function changePassword(event){event.preventDefault();try{await request("/api/account/password",{method:"PUT",body:JSON.stringify({currentPassword:$("#current-password").value,newPassword:$("#new-password").value})});event.currentTarget.reset();toast(t("passwordChanged"),"success");}catch(error){toast(errorMessage(error),"error");}}
+async function loadBlocks(){try{const users=await request("/api/blocks");$("#blocked-list").innerHTML=users.length?users.map(user=>`<div class="directory-row">${avatar(user)}<div class="directory-copy"><strong>${escapeHTML(user.displayName)}</strong><span>@${escapeHTML(user.username)}</span></div><button class="button button--secondary button--small" data-unblock-user="${user.id}">${t("unblock")}</button></div>`).join(""):`<p class="context-empty">${t("noResults")}</p>`;}catch{}}
+
+function openDialog(title,body,actions){const backdrop=$("#dialog-backdrop");$("#dialog-title").textContent=title;$("#dialog-body").innerHTML=body;$("#dialog-actions").innerHTML=actions;backdrop.hidden=false;document.body.style.overflow="hidden";setTimeout(()=>$("input,textarea,button",backdrop)?.focus(),0);}
+function closeDialog(){const backdrop=$("#dialog-backdrop");backdrop.hidden=true;document.body.style.overflow="";}
+function promptDialog(title,value="",multiline=true,type="text"){return new Promise(resolve=>{openDialog(title,multiline?`<textarea id="dialog-input" rows="5" maxlength="5000">${escapeHTML(value)}</textarea>`:`<input id="dialog-input" type="${type}" maxlength="128">`,`<button class="button button--secondary" data-dialog-cancel>${t("cancel")}</button><button class="button button--primary" data-dialog-submit>${t("saveChanges")}</button>`);$('[data-dialog-cancel]').onclick=()=>{closeDialog();resolve(null)};$('[data-dialog-submit]').onclick=()=>{const answer=$("#dialog-input").value;closeDialog();resolve(answer)};});}
+async function confirmDialog(title){return new Promise(resolve=>{openDialog(title,"",`<button class="button button--secondary" data-dialog-no>${t("cancel")}</button><button class="button button--danger" data-dialog-yes>${t("delete")}</button>`);$('[data-dialog-no]').onclick=()=>{closeDialog();resolve(false)};$('[data-dialog-yes]').onclick=()=>{closeDialog();resolve(true)};});}
+
+async function uploadProfileMedia(kind){$("#profile-media").dataset.kind=kind;$("#profile-media").click();}
+async function handleProfileUpload(file,kind){try{const result=await upload(file,{kind});state.me={...state.me,[kind==="avatar"?"avatar":"coverImage"]:result.id};renderCurrent();toast(t("profileSaved"),"success");if(state.view==="profile")loadProfile(state.me.username);}catch(error){toast(errorMessage(error),"error");}}
+
+async function handleAction(target){
+  if(target.closest('[data-route]')){const node=target.closest('[data-route]');navigate(node.dataset.route);return;}
+  if(target.closest('[data-feed]')){const node=target.closest('[data-feed]');state.feed=node.dataset.feed;$$('[data-feed]').forEach(item=>item.classList.toggle("is-active",item===node));history.replaceState({},"",`/home/${state.feed}`);loadFeed(false);return;}
+  if(target.closest('[data-open-profile]')){navigate("profile",{username:target.closest('[data-open-profile]').dataset.openProfile});return;}
+  if(target.closest('[data-hashtag]')){openHashtag(target.closest('[data-hashtag]').dataset.hashtag);return;}
+  if(target.closest('[data-compose-focus]')){navigate("feed");setTimeout(()=>$("#post-content").focus(),50);return;}
+  if(target.closest('[data-refresh]')){if(target.closest('[data-refresh]').dataset.refresh==='feed')loadFeed(false);return;}
+  if(target.closest('[data-request-tab]')){const node=target.closest('[data-request-tab]');state.requestTab=node.dataset.requestTab;$$('[data-request-tab]').forEach(item=>item.classList.toggle('is-active',item===node));renderRequests();return;}
+  if(target.closest('[data-menu-post]')){const menu=target.closest('.post-menu-wrap').querySelector('.post-menu');$$('.post-menu').forEach(item=>{if(item!==menu)item.hidden=true});menu.hidden=!menu.hidden;return;}
+  const postCard=target.closest('[data-post-id]'),postId=postCard?.dataset.postId;
+  if(target.closest('[data-react-post]')){const result=await request(`/api/posts/${postId}/reaction`,{method:"POST"});const button=target.closest('[data-react-post]');button.classList.toggle("is-active",result.reacted);$('.action-count',button).textContent=result.count||"";return;}
+  if(target.closest('[data-bookmark-post]')){const result=await request(`/api/posts/${postId}/bookmark`,{method:"POST"});target.closest('[data-bookmark-post]').classList.toggle("is-active",result.bookmarked);return;}
+  if(target.closest('[data-share-post]')){const url=`${location.origin}/?post=${postId}`;await navigator.clipboard.writeText(url);toast(t("copied"),"success");return;}
+  if(target.closest('[data-focus-comment]')){$('.comment-input',postCard).focus();return;}
+  if(target.closest('[data-load-comments]')){const response=await fetchEnvelope(`/api/posts/${postId}/comments?limit=50`),post=state.posts.find(item=>item.id===postId);if(post){post.comments=response.data;postCard.replaceWith(renderPost(post));}return;}
+  if(target.closest('[data-delete-post]')){if(await confirmDialog(t("confirmDelete"))){await request(`/api/posts/${postId}`,{method:"DELETE"});state.posts=state.posts.filter(item=>item.id!==postId);postCard.remove();}return;}
+  if(target.closest('[data-edit-post]')){const post=state.posts.find(item=>item.id===postId),value=await promptDialog(t("edit"),post?.content||"");if(value!==null){const updated=await request(`/api/posts/${postId}`,{method:"PUT",body:JSON.stringify({content:value,visibility:post.visibility})});Object.assign(post,updated);postCard.replaceWith(renderPost(post));}return;}
+  if(target.closest('[data-vote-post]')){await request(`/api/posts/${postId}/vote`,{method:"POST",body:JSON.stringify({option:Number(target.closest('[data-vote-post]').dataset.option)})});loadFeed(false);return;}
+  if(target.closest('[data-reply-comment]')){const id=target.closest('[data-reply-comment]').dataset.replyComment,form=$('.comment-composer',postCard);$('input[name=parentId]',form).value=id;$('.replying-to',form).classList.add('is-active');$('.comment-input',form).focus();return;}
+  if(target.closest('[data-cancel-reply]')){const form=target.closest('form');$('input[name=parentId]',form).value="";$('.replying-to',form).classList.remove('is-active');return;}
+  if(target.closest('[data-react-comment]')){const node=target.closest('[data-react-comment]'),result=await request(`/api/comments/${node.dataset.reactComment}/reaction`,{method:"POST"});node.classList.toggle('is-active',result.reacted);node.innerHTML=`${icon("heart")} ${result.count||""}`;return;}
+  if(target.closest('[data-edit-comment]')){const node=target.closest('[data-comment-id]'),value=await promptDialog(t("edit"),$('.comment-content',node).textContent);if(value!==null){await request(`/api/comments/${node.dataset.commentId}`,{method:"PUT",body:JSON.stringify({content:value})});loadFeed(false);}return;}
+  if(target.closest('[data-delete-comment]')){const id=target.closest('[data-delete-comment]').dataset.deleteComment;if(await confirmDialog(t("confirmDelete"))){await request(`/api/comments/${id}`,{method:"DELETE"});loadFeed(false);}return;}
+  if(target.closest('[data-report]')){const node=target.closest('[data-report]');openDialog(t("report"),`<select id="report-reason"><option value="spam">Spam</option><option value="harassment">Harassment</option><option value="inappropriate">Inappropriate</option><option value="other">Other</option></select><textarea id="report-details" maxlength="500"></textarea>`,`<button class="button button--secondary" data-dialog-cancel>${t("cancel")}</button><button class="button button--primary" data-send-report>${t("report")}</button>`);$('[data-dialog-cancel]').onclick=closeDialog;$('[data-send-report]').onclick=async()=>{await request('/api/reports',{method:'POST',body:JSON.stringify({targetType:node.dataset.report,targetId:node.dataset.targetId,reason:$('#report-reason').value,details:$('#report-details').value})});closeDialog();toast(t('reported'),'success')};return;}
+  if(target.closest('[data-send-request]')){await request(`/api/friend-requests/${target.closest('[data-send-request]').dataset.sendRequest}`,{method:'POST'});toast(t('requestSent'),'success');loadPeople();return;}
+  if(target.closest('[data-cancel-request]')){await request(`/api/friend-requests/${target.closest('[data-cancel-request]').dataset.cancelRequest}/cancel`,{method:'POST'});loadPeople();return;}
+  if(target.closest('[data-request-action]')){const node=target.closest('[data-request-action]');await request(`/api/friend-requests/${node.dataset.userId}/${node.dataset.requestAction}`,{method:'POST'});loadRequests();return;}
+  if(target.closest('[data-profile-action]')){const node=target.closest('[data-profile-action]'),id=node.dataset.userId,action=node.dataset.profileAction;if(action==='self'){navigate('settings');}else if(action==='none'){await request(`/api/friend-requests/${id}`,{method:'POST'});}else if(action==='outgoing'){await request(`/api/friend-requests/${id}/cancel`,{method:'POST'});}else if(action==='incoming'){await request(`/api/friend-requests/${id}/accept`,{method:'POST'});}else if(action==='friends'){await request(`/api/friends/${id}`,{method:'DELETE'});}else if(action==='blocked'){await request(`/api/blocks/${id}`,{method:'DELETE'});}loadProfile(state.profile.username);return;}
+  if(target.closest('[data-message-user]')){startConversation(target.closest('[data-message-user]').dataset.messageUser);return;}
+  if(target.closest('[data-block-user]')){const id=target.closest('[data-block-user]').dataset.blockUser;await request(`/api/blocks/${id}`,{method:'POST'});loadProfile(state.profile.username);return;}
+  if(target.closest('[data-unblock-user]')){await request(`/api/blocks/${target.closest('[data-unblock-user]').dataset.unblockUser}`,{method:'DELETE'});loadBlocks();return;}
+  if(target.closest('[data-conversation-id]')){openConversation(Number(target.closest('[data-conversation-id]').dataset.conversationId));return;}
+  if(target.closest('[data-notification-id]')){const node=target.closest('[data-notification-id]'),details=JSON.parse(node.dataset.notificationTarget||'{}');await request('/api/notifications/read',{method:'POST',body:JSON.stringify({ids:[node.dataset.notificationId]})});if(details.conversationId){navigate('messages');setTimeout(()=>openConversation(Number(details.conversationId)),100);}else if(details.postId)openPostDetail(details.postId);else if(node.dataset.actorUsername)navigate('profile',{username:node.dataset.actorUsername});return;}
+  if(target.closest('[data-settings-tab]')){const name=target.closest('[data-settings-tab]').dataset.settingsTab;$$('[data-settings-tab]').forEach(node=>node.classList.toggle('is-active',node.dataset.settingsTab===name));$$('[data-settings-panel]').forEach(node=>node.hidden=node.dataset.settingsPanel!==name);history.replaceState({},'',`/settings/${name}`);return;}
+  if(target.closest('[data-upload-kind]')){uploadProfileMedia(target.closest('[data-upload-kind]').dataset.uploadKind);return;}
 }
 
-function renderComments(comments) {
-  if (!comments.length) return `<p class="comments-empty">${escapeHTML(t("noComments"))}</p>`;
-  const renderNode = (comment, depth = 0, seen = new Set()) => {
-    const commentID = String(comment._id || "");
-    if (seen.has(commentID)) return "";
-    const nextSeen = new Set(seen).add(commentID);
-    const author = userName(comment.userID);
-    const safeDepth = Math.min(depth, 3);
-    return `<div class="comment" data-depth="${safeDepth}" style="--depth:${safeDepth}">
-      ${avatarHTML(author, "avatar--sm")}
-      <div class="comment-bubble"><strong class="comment-author" dir="auto">${escapeHTML(author)}</strong><p class="comment-content" dir="auto">${escapeHTML(comment.content)}</p><button class="reply-action" type="button" data-reply-post="${escapeHTML(String(comment.postID || ""))}" data-reply-comment="${escapeHTML(commentID)}" data-reply-name="${escapeHTML(author)}">${escapeHTML(t("reply"))}</button></div>
-    </div>${(comment.children || []).map(child => renderNode(child, depth + 1, nextSeen)).join("")}`;
-  };
-  return buildCommentTree(comments).map(comment => renderNode(comment)).join("");
+function bindEvents(){
+  $("#auth-form").addEventListener("submit",submitAuth);$$('[data-auth-mode]').forEach(node=>node.onclick=()=>setAuthMode(node.dataset.authMode));
+  $("#password-toggle").onclick=()=>{const input=$("#password");input.type=input.type==="password"?"text":"password";$("#password-toggle").classList.toggle("is-visible",input.type==="text")};
+  document.addEventListener("click",event=>{handleAction(event.target).catch(error=>toast(errorMessage(error),"error"));});
+  document.addEventListener("submit",event=>{const form=event.target;if(form.matches('[data-comment-form]')){event.preventDefault();const content=$('.comment-input',form).value.trim();if(!content)return;request(`/api/posts/${form.dataset.commentForm}/comments`,{method:'POST',body:JSON.stringify({content,parentId:$('input[name=parentId]',form).value||null})}).then(()=>loadFeed(false)).catch(error=>toast(errorMessage(error),'error'));}else if(form.matches('[data-message-form]')){event.preventDefault();sendMessage(form);} });
+  $("#profile-form").addEventListener("submit",saveProfile);$("#privacy-form").addEventListener("submit",savePrivacy);$("#password-form").addEventListener("submit",changePassword);
+  $$('[data-logout]').forEach(node=>node.onclick=logout);$$('[data-language-toggle]').forEach(node=>node.onclick=()=>applyLanguage(i18n.language==="he"?"en":"he"));$$('[data-set-language]').forEach(node=>node.onclick=()=>applyLanguage(node.dataset.setLanguage));$$('[data-set-theme]').forEach(node=>node.onclick=()=>applyTheme(node.dataset.setTheme));$$('[data-theme-toggle]').forEach(node=>node.onclick=()=>applyTheme(actualTheme()==="dark"?"light":"dark"));
+  $("#post-content").addEventListener("input",event=>{event.target.style.height="auto";event.target.style.height=`${Math.min(event.target.scrollHeight,220)}px`;updateComposerState();showMentionSuggestions(event.target);});
+  $("#create-post").onclick=createPost;$("#post-media").onchange=event=>previewMedia([...event.target.files]);$("#toggle-poll").onclick=()=>{state.pollOpen=!state.pollOpen;$("#poll-editor").hidden=!state.pollOpen;if(state.pollOpen&&!$$(".poll-option").length){addPollOption();addPollOption();}updateComposerState();};$("#add-poll-option").onclick=()=>addPollOption();
+  $("#global-search").addEventListener("input",event=>{clearTimeout(state.searchTimer);state.searchTimer=setTimeout(()=>runSearch(event.target.value.trim().replace(/^#/,"")),280);});
+  $("#profile-media").onchange=event=>{const file=event.target.files[0];if(file)handleProfileUpload(file,event.target.dataset.kind);event.target.value="";};
+  $("#load-more-feed").onclick=()=>loadFeed(true);$("#read-all").onclick=async()=>{await request('/api/notifications/read-all',{method:'POST'});loadNotifications();};
+  $("#delete-account").onclick=async()=>{const password=await promptDialog(t('confirmAccount'),'',false,'password');if(password){await request('/api/account',{method:'DELETE',body:JSON.stringify({password})});state.me=null;showAuth();}};
+  $("#dialog-backdrop").onclick=event=>{if(event.target===event.currentTarget)closeDialog();};$('[data-dialog-close]').onclick=closeDialog;
+  document.addEventListener("input",event=>{if(event.target.matches('.comment-input'))event.target.closest('form').querySelector('.comment-submit').disabled=!event.target.value.trim();});
+  document.addEventListener("change",async event=>{if(!event.target.matches('.message-media'))return;const form=event.target.closest('form'),file=event.target.files[0];if(!file)return;try{const result=await upload(file,{kind:'message',conversationId:form.dataset.messageForm});form.dataset.mediaId=result.id;const label=$('.message-file',form);label.textContent=file.name;label.hidden=false;}catch(error){toast(errorMessage(error),'error');}finally{event.target.value='';}});
+  document.addEventListener("click",event=>{const remove=event.target.closest('[data-remove-media]');if(remove){state.mediaFiles.splice(Number(remove.dataset.removeMedia),1);previewMedia([]);}const pollRemove=event.target.closest('[data-remove-poll-option]');if(pollRemove&&$$(".poll-option").length>2)pollRemove.closest('.poll-option').remove();});
+  window.addEventListener("popstate",()=>navigateFromLocation(false));window.addEventListener("keydown",event=>{if(event.key==='Escape')closeDialog();});matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{if(state.theme==='system')applyTheme('system',false)});
 }
+function showMentionSuggestions(textarea){let popover=$('.mention-popover',textarea.parentElement);const match=textarea.value.slice(0,textarea.selectionStart).match(/@([\w.-]{0,30})$/);if(!match){popover?.remove();return;}const query=match[1].toLowerCase(),matches=state.people.filter(user=>user.username.toLowerCase().includes(query)).slice(0,5);if(!matches.length){if(state.lastMentionQuery!==query){state.lastMentionQuery=query;request(`/api/users?q=${encodeURIComponent(query)}`).then(users=>{state.people=users;if(users.length)showMentionSuggestions(textarea)}).catch(()=>{});}return;}if(!popover){popover=document.createElement('div');popover.className='mention-popover';textarea.parentElement.append(popover);}popover.innerHTML=matches.map(user=>`<button type="button" data-insert-mention="${escapeHTML(user.username)}">${avatar(user,'avatar--xs')}<span>${escapeHTML(user.displayName)}</span></button>`).join('');popover.querySelectorAll('[data-insert-mention]').forEach(button=>button.onclick=()=>{const before=textarea.value.slice(0,textarea.selectionStart).replace(/@[\w.-]*$/,'@'+button.dataset.insertMention+' '),after=textarea.value.slice(textarea.selectionStart);textarea.value=before+after;popover.remove();textarea.focus();updateComposerState();});}
 
-async function createPost() {
-  const textarea = $("#post-content");
-  const content = textarea.value.trim();
-  if (!content) {
-    showToast(t("writeSomething"), "info");
-    return;
-  }
-  const button = $("#create-post");
-  setButtonLoading(button, true);
-  try {
-    await apiFetch("/my/post/add", {
-      method: "POST", headers: { "User-Id": String(state.userID) }, body: JSON.stringify({ content })
-    });
-    textarea.value = "";
-    autoGrow(textarea);
-    updatePostCounter();
-    showToast(t("postCreated"), "success");
-    await loadFeed();
-  } catch (error) {
-    showToast(errorTranslation(error, "postCreateError"), "error");
-  } finally {
-    setButtonLoading(button, false);
-    updatePostCounter();
-  }
-}
-
-function startReply(postID, commentID, name) {
-  state.replyTargets.set(postID, { commentID, name });
-  const form = $(`[data-comment-form="${CSS.escape(postID)}"]`);
-  if (!form) return;
-  const banner = $(".replying-to", form);
-  $("[data-reply-label]", banner).textContent = t("replyingTo", { name });
-  banner.classList.add("is-active");
-  $(".comment-input", form).focus();
-}
-
-function cancelReply(postID) {
-  state.replyTargets.delete(postID);
-  const form = $(`[data-comment-form="${CSS.escape(postID)}"]`);
-  $(".replying-to", form)?.classList.remove("is-active");
-}
-
-async function submitComment(form) {
-  const postID = form.dataset.commentForm;
-  const textarea = $(".comment-input", form);
-  const content = textarea.value.trim();
-  if (!content) return;
-  const button = $(".comment-submit", form);
-  const replyTarget = state.replyTargets.get(postID);
-  const body = { post_id: postID, content };
-  if (replyTarget) body.replyTo = replyTarget.commentID;
-  setButtonLoading(button, true);
-  try {
-    await apiFetch("/my/post/comment", {
-      method: "POST", headers: { "User-Id": String(state.userID) }, body: JSON.stringify(body)
-    });
-    textarea.value = "";
-    cancelReply(postID);
-    showToast(t("commentAdded"), "success");
-    await loadFeed();
-  } catch (error) {
-    showToast(errorTranslation(error, "commentError"), "error");
-    setButtonLoading(button, false);
-    button.disabled = !textarea.value.trim();
-  }
-}
-
-// ---------- Delete modal ----------
-
-function openDeleteModal(postID, source) {
-  state.deletePostID = postID;
-  state.lastModalFocus = source || document.activeElement;
-  const backdrop = $("#modal-backdrop");
-  backdrop.hidden = false;
-  document.body.style.overflow = "hidden";
-  $("#modal-cancel").focus();
-}
-
-function closeModal() {
-  const backdrop = $("#modal-backdrop");
-  if (backdrop.hidden) return;
-  backdrop.hidden = true;
-  document.body.style.overflow = "";
-  state.deletePostID = null;
-  state.lastModalFocus?.focus?.();
-}
-
-async function confirmDelete() {
-  if (!state.deletePostID) return;
-  const postID = state.deletePostID;
-  const button = $("#modal-confirm");
-  setButtonLoading(button, true);
-  try {
-    await apiFetch("/my/post/delete", {
-      method: "POST", headers: { "User-Id": String(state.userID) }, body: JSON.stringify({ post_id: postID })
-    });
-    const card = $(`[data-post-id="${CSS.escape(postID)}"]`);
-    card?.classList.add("is-removing");
-    closeModal();
-    showToast(t("postDeleted"), "success");
-    window.setTimeout(() => loadFeed(), 210);
-  } catch (error) {
-    showToast(errorTranslation(error, "deleteError"), "error");
-  } finally {
-    setButtonLoading(button, false);
-  }
-}
-
-function trapModalFocus(event) {
-  const modal = $("#modal-backdrop");
-  if (modal.hidden || event.key !== "Tab") return;
-  const focusable = $$('button:not(:disabled)', modal);
-  const first = focusable[0];
-  const last = focusable[focusable.length - 1];
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-}
-
-// ---------- People and friend requests ----------
-
-function renderPeople() {
-  const container = $("#people-list");
-  if (!container) return;
-  if (state.usersStatus === "error") {
-    container.innerHTML = emptyState("peopleErrorTitle", "peopleErrorCopy", "people", true);
-    return;
-  }
-  if (!state.users.length) {
-    container.innerHTML = emptyState("peopleEmptyTitle", "peopleEmptyCopy");
-    return;
-  }
-  const query = $("#people-search")?.value.trim().toLocaleLowerCase(state.language === "he" ? "he" : "en") || "";
-  const people = state.users.filter(user => Number(user.userID) !== state.userID && String(user.username).toLocaleLowerCase().includes(query));
-  if (!people.length) {
-    container.innerHTML = emptyState(query ? "noResultsTitle" : "peopleEmptyTitle", query ? "noResultsCopy" : "peopleEmptyCopy");
-    return;
-  }
-  container.innerHTML = people.map(user => {
-    const id = Number(user.userID);
-    const sent = state.sentRequests.has(id);
-    return `<div class="directory-row" data-person-id="${id}">${avatarHTML(user.username)}<div class="directory-copy"><strong dir="auto">${escapeHTML(user.username)}</strong><span>${escapeHTML(t("userNumber", { id }))}</span></div>${sent ? `<span class="sent-label">${icon("check")} ${escapeHTML(t("requestSent"))}</span>` : `<button class="button button--secondary button--small" type="button" data-send-request="${id}">${icon("plus-user")}<span>${escapeHTML(t("sendRequest"))}</span><span class="spinner"></span></button>`}</div>`;
-  }).join("");
-}
-
-async function sendFriendRequest(targetID, button) {
-  setButtonLoading(button, true);
-  try {
-    await apiFetch(`/friend-request/${encodeURIComponent(state.userID)}/${encodeURIComponent(targetID)}`, { method: "POST" });
-    state.sentRequests.add(Number(targetID));
-    renderPeople();
-    showToast(t("requestSentToast"), "success");
-  } catch (error) {
-    setButtonLoading(button, false);
-    showToast(errorTranslation(error, "requestError"), "error");
-  }
-}
-
-async function loadFriendRequests() {
-  const container = $("#requests-list");
-  state.requestsStatus = "loading";
-  if (state.activeView === "requests") renderSkeleton(container, 2);
-  try {
-    const requests = await apiFetch("/my/requests", { headers: { "User-Id": String(state.userID) } });
-    state.requests = Array.isArray(requests) ? requests : [];
-    state.requestsStatus = "success";
-    renderRequests();
-    renderRequestsPreview();
-    updateRequestBadges();
-  } catch (error) {
-    state.requests = [];
-    state.requestsStatus = "error";
-    if (container) container.innerHTML = emptyState("requestsErrorTitle", "requestsErrorCopy", "requests", true);
-    $("#requests-preview").innerHTML = `<p class="context-empty">${escapeHTML(t("requestsErrorCopy"))}</p>`;
-    updateRequestBadges();
-  }
-}
-
-function renderRequestsState() {
-  const container = $("#requests-list");
-  if (!container) return;
-  if (state.requestsStatus === "loading") renderSkeleton(container, 2);
-  else if (state.requestsStatus === "error") container.innerHTML = emptyState("requestsErrorTitle", "requestsErrorCopy", "requests", true);
-  else renderRequests();
-}
-
-function renderRequestsPreviewState() {
-  const container = $("#requests-preview");
-  if (!container) return;
-  if (state.requestsStatus === "loading") container.innerHTML = `<p class="context-empty">${escapeHTML(t("loading"))}</p>`;
-  else if (state.requestsStatus === "error") container.innerHTML = `<p class="context-empty">${escapeHTML(t("requestsErrorCopy"))}</p>`;
-  else renderRequestsPreview();
-}
-
-function renderRequests() {
-  const container = $("#requests-list");
-  if (!container) return;
-  if (!state.requests.length) {
-    container.innerHTML = emptyState("requestsEmptyTitle", "requestsEmptyCopy");
-    return;
-  }
-  container.innerHTML = state.requests.map(request => {
-    const id = Number(request.follower_id);
-    const name = userName(id);
-    return `<div class="directory-row" data-request-id="${id}">${avatarHTML(name)}<div class="directory-copy"><strong dir="auto">${escapeHTML(name)}</strong><span>${escapeHTML(t("pendingRequest"))}</span></div><div class="request-actions"><button class="button button--secondary button--small" type="button" data-handle-request="${id}" data-request-action="reject"><span>${escapeHTML(t("reject"))}</span><span class="spinner"></span></button><button class="button button--primary button--small" type="button" data-handle-request="${id}" data-request-action="approve">${icon("check")}<span>${escapeHTML(t("approve"))}</span><span class="spinner"></span></button></div></div>`;
-  }).join("");
-}
-
-async function handleFriendRequest(followerID, action, button) {
-  const row = button.closest("[data-request-id]");
-  const buttons = $$('[data-handle-request]', row);
-  buttons.forEach(item => { item.disabled = true; });
-  setButtonLoading(button, true);
-  try {
-    await apiFetch(`/my/requests/${encodeURIComponent(followerID)}/${action}`, {
-      method: "PUT", headers: { "User-Id": String(state.userID) }
-    });
-    state.requests = state.requests.filter(request => Number(request.follower_id) !== Number(followerID));
-    renderRequests();
-    renderRequestsPreview();
-    updateRequestBadges();
-    showToast(t(action === "approve" ? "requestApproved" : "requestRejected"), "success");
-    if (action === "approve") await loadFeed();
-  } catch (error) {
-    buttons.forEach(item => { item.disabled = false; });
-    setButtonLoading(button, false);
-    showToast(errorTranslation(error, "requestHandleError"), "error");
-  }
-}
-
-function renderRequestsPreview() {
-  const container = $("#requests-preview");
-  if (!container) return;
-  if (!state.requests.length) {
-    container.innerHTML = `<p class="context-empty">${escapeHTML(t("noPreviewRequests"))}</p>`;
-    return;
-  }
-  container.innerHTML = state.requests.slice(0, 3).map(request => {
-    const id = Number(request.follower_id);
-    const name = userName(id);
-    return `<div class="preview-row">${avatarHTML(name, "avatar--xs")}<div class="preview-copy"><strong dir="auto">${escapeHTML(name)}</strong><span>${escapeHTML(t("pendingOnly"))}</span></div></div>`;
-  }).join("");
-}
-
-function updateRequestBadges() {
-  $$('[data-request-badge]').forEach(badge => {
-    badge.hidden = state.requests.length === 0;
-    badge.textContent = state.requests.length > 99 ? "99+" : String(state.requests.length);
-  });
-}
-
-async function updateProfile(event) {
-  event.preventDefault();
-  const input = $("#profile-username");
-  const errorElement = $("#profile-username-error");
-  const button = $("#profile-submit");
-  const username = input.value.trim();
-
-  errorElement.textContent = "";
-  input.removeAttribute("aria-invalid");
-
-  if (!username) {
-    errorElement.textContent = t("requiredUsername");
-    input.setAttribute("aria-invalid", "true");
-    input.focus();
-    return;
-  }
-
-  if (username.length > 80) {
-    errorElement.textContent = t("usernameTooLong");
-    input.setAttribute("aria-invalid", "true");
-    input.focus();
-    return;
-  }
-
-  if (username === state.username) return;
-
-  setButtonLoading(button, true);
-  try {
-    const result = await apiFetch("/my/profile", {
-      method: "PUT",
-      headers: { "User-Id": String(state.userID) },
-      body: JSON.stringify({ username })
-    });
-    state.username = String(result.username);
-    localStorage.setItem(CONFIG.storage.username, state.username);
-
-    const currentUser = state.userMap.get(state.userID);
-    if (currentUser) currentUser.username = state.username;
-
-    input.value = state.username;
-    updateCurrentUserUI();
-    renderFeedState();
-    renderPeople();
-    renderRequestsState();
-    renderRequestsPreviewState();
-    showToast(t("usernameUpdated"), "success");
-  } catch (error) {
-    const message = errorTranslation(error, "profileUpdateError");
-    errorElement.textContent = message;
-    input.setAttribute("aria-invalid", "true");
-    showToast(message, "error");
-  } finally {
-    setButtonLoading(button, false);
-    updateProfileFormState();
-  }
-}
-
-// ---------- Events ----------
-
-function updatePostCounter() {
-  const textarea = $("#post-content");
-  const length = textarea.value.length;
-  $("#post-counter").textContent = `${length} / 2000`;
-  $("#create-post").disabled = !textarea.value.trim();
-}
-
-function bindEvents() {
-  $("#auth-form").addEventListener("submit", submitAuth);
-  $("#profile-form").addEventListener("submit", updateProfile);
-  $("#profile-username").addEventListener("input", event => {
-    event.currentTarget.removeAttribute("aria-invalid");
-    $("#profile-username-error").textContent = "";
-    updateProfileFormState();
-  });
-  $$('[data-auth-mode]').forEach(button => button.addEventListener("click", () => updateAuthMode(button.dataset.authMode)));
-  $("#password-toggle").addEventListener("click", event => {
-    const input = $("#password");
-    const visible = input.type === "text";
-    input.type = visible ? "password" : "text";
-    event.currentTarget.classList.toggle("is-visible", !visible);
-    event.currentTarget.setAttribute("aria-label", t(visible ? "showPassword" : "hidePassword"));
-  });
-  [$("#username"), $("#password")].forEach(input => input.addEventListener("input", () => {
-    input.removeAttribute("aria-invalid");
-    $(`#${input.id}-error`).textContent = "";
-  }));
-  $$('[data-language-toggle]').forEach(button => button.addEventListener("click", () => setLanguage(state.language === "he" ? "en" : "he")));
-  $$('[data-set-language]').forEach(button => button.addEventListener("click", () => setLanguage(button.dataset.setLanguage)));
-  $$('[data-theme-toggle]').forEach(button => button.addEventListener("click", toggleTheme));
-  $$('[data-view-target]').forEach(button => button.addEventListener("click", event => { event.preventDefault(); switchView(button.dataset.viewTarget); }));
-  $$('[data-compose-focus]').forEach(button => button.addEventListener("click", () => { switchView("feed"); window.setTimeout(() => $("#post-content").focus(), 80); }));
-  [$("#sidebar-logout"), $("#settings-logout")].forEach(button => button.addEventListener("click", logout));
-
-  $("#post-content").addEventListener("input", event => { autoGrow(event.target); updatePostCounter(); });
-  $("#post-content").addEventListener("keydown", event => {
-    if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && event.currentTarget.value.trim()) createPost();
-  });
-  $("#create-post").addEventListener("click", createPost);
-  $("#refresh-feed").addEventListener("click", loadFeed);
-  $("#refresh-requests").addEventListener("click", loadFriendRequests);
-  $("#people-search").addEventListener("input", renderPeople);
-
-  $("#main-app").addEventListener("input", event => {
-    if (!event.target.matches(".comment-input")) return;
-    autoGrow(event.target);
-    const button = $(".comment-submit", event.target.closest("form"));
-    button.disabled = !event.target.value.trim();
-  });
-  $("#main-app").addEventListener("submit", event => {
-    const form = event.target.closest("[data-comment-form]");
-    if (!form) return;
-    event.preventDefault();
-    submitComment(form);
-  });
-  $("#main-app").addEventListener("click", event => {
-    const deleteButton = event.target.closest("[data-delete-post]");
-    const replyButton = event.target.closest("[data-reply-comment]");
-    const cancelButton = event.target.closest("[data-cancel-reply]");
-    const requestButton = event.target.closest("[data-send-request]");
-    const handleRequestButton = event.target.closest("[data-handle-request]");
-    const retryButton = event.target.closest("[data-retry]");
-    if (deleteButton) openDeleteModal(deleteButton.dataset.deletePost, deleteButton);
-    else if (replyButton) startReply(replyButton.dataset.replyPost, replyButton.dataset.replyComment, replyButton.dataset.replyName);
-    else if (cancelButton) cancelReply(cancelButton.dataset.cancelReply);
-    else if (requestButton) sendFriendRequest(Number(requestButton.dataset.sendRequest), requestButton);
-    else if (handleRequestButton) handleFriendRequest(Number(handleRequestButton.dataset.handleRequest), handleRequestButton.dataset.requestAction, handleRequestButton);
-    else if (retryButton?.dataset.retry === "feed") loadFeed();
-    else if (retryButton?.dataset.retry === "requests") loadFriendRequests();
-    else if (retryButton?.dataset.retry === "people") loadUsers(true).then(renderPeople).catch(() => { $("#people-list").innerHTML = emptyState("peopleErrorTitle", "peopleErrorCopy", "people", true); });
-  });
-
-  $("#modal-close").addEventListener("click", closeModal);
-  $("#modal-cancel").addEventListener("click", closeModal);
-  $("#modal-confirm").addEventListener("click", confirmDelete);
-  $("#modal-backdrop").addEventListener("click", event => { if (event.target === event.currentTarget) closeModal(); });
-  document.addEventListener("keydown", event => {
-    if (event.key === "Escape" && !$("#modal-backdrop").hidden) closeModal();
-    trapModalFocus(event);
-  });
-}
-
-// ---------- Start ----------
-
-async function init() {
-  state.theme = initialTheme();
-  setTheme(state.theme, false);
-  setLanguage(state.language, false);
-  bindEvents();
-  updatePostCounter();
-  if (state.userID && state.username) {
-    showApplication();
-    await loadInitialData();
-  } else {
-    $("#auth-screen").hidden = false;
-    $("#main-app").hidden = true;
-  }
-}
-
-document.addEventListener("DOMContentLoaded", init);
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bootstrap);
+else bootstrap();
